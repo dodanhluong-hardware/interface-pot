@@ -2266,6 +2266,22 @@ button:hover {
   background: rgba(63, 159, 145, 0.055);
 }
 
+/* Dải an toàn hiển thị nhẹ dưới mỗi ô để người mới biết nên nhập bao nhiêu. */
+.control-range-hint {
+  grid-column: 1 / -1;
+  display: block;
+  margin-top: -2px;
+  color: #82929a;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.25;
+  letter-spacing: .01em;
+}
+.eq-cell > .control-range-hint {
+  grid-column: 1;
+  text-align: left;
+}
+
 .system-control-card {
   display: flex;
   min-height: 228px;

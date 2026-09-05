@@ -776,6 +776,18 @@ function handleBleRxNotification(event) {
         resetAckTimer = null;
         if (btnResetDefaults) btnResetDefaults.disabled = false;
         setTxStatus(ok ? 'đã khôi phục mặc định' : `reset lỗi ${bytes[3]}`, ok ? 'ok' : 'bad');
+        // RESET chỉ trả ACK; đọc lại toàn bộ cấu hình để mọi slider, EQ,
+        // effect và toggle trên giao diện phản ánh đúng giá trị MCU vừa đặt.
+        if (ok) {
+          // Một số trạng thái giao diện (preset chọn, chế độ SUB) không nằm
+          // trong gói snapshot cấu hình; đưa chúng về mặc định ngay lập tức.
+          if (eqPresetSel) eqPresetSel.value = 'eq1';
+          syncSubModeUI('mono');
+          syncSubPhaseUI(0);
+          if (kcModeSelect) kcModeSelect.value = '0';
+          appendRxLog('RESET ACK; đang đọc lại toàn bộ cấu hình mặc định');
+          window.setTimeout(() => { requestDspConfigFromChip().catch(() => {}); }, 80);
+        }
       } else {
         setTxStatus(ok ? 'đã xác nhận' : `xác nhận lỗi ${bytes[3]}`, ok ? 'ok' : 'bad');
       }
@@ -1157,6 +1169,7 @@ function syncDynamicEqThresholdLimits(changedControl = null) {
   [lowControl, normalControl, highControl].forEach((control) => {
     if (control._valueEl) control._valueEl.textContent = formatRangeValue(control);
   });
+  refreshControlHints();
 }
 
 async function requestDspConfigFromChip() {
@@ -1301,6 +1314,47 @@ function initRangeLiveValues() {
     render();
     rangeEl.addEventListener('input', render);
     rangeEl.addEventListener('change', render);
+  });
+}
+
+function controlHintUnit(control) {
+  if (control.dataset.unit) return control.dataset.unit;
+  const id = String(control.id || '').toLowerCase();
+  const label = String(control.closest('label')?.textContent || '').toLowerCase();
+  const field = String(control.dataset.field || '').toLowerCase();
+  if (field === 'fc') return ' Hz';
+  if (field === 'gain') return ' dB';
+  if (id.includes('ratio') || label.includes('tỷ lệ nén')) return ':1';
+  if (id.includes('freq') || id === 'dyn-low-freq' || id === 'dyn-high-freq' || id === 'mic-afb-freq' || label.includes('tần số')) return ' Hz';
+  if (id.includes('delay') || id.includes('attack') || id.includes('release') || label.includes('(ms)') || label.includes('trễ')) return ' ms';
+  if (id.includes('gain') || id.includes('threshold') || id.includes('pregain') || id.includes('bass') || id.includes('treble') || label.includes('db')) return ' dB';
+  if (id.includes('decay')) return ' s';
+  if (control.type === 'range' && (Number(control.min) >= 0 && Number(control.max) <= 100)) return '%';
+  return '';
+}
+
+function formatHintNumber(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value ?? '');
+  return Number.isInteger(n) ? String(n) : String(n).replace(/\.0+$/, '');
+}
+
+function refreshControlHints(root = document) {
+  root.querySelectorAll('input[type="range"], input[type="number"]').forEach((control) => {
+    const min = control.getAttribute('min');
+    const max = control.getAttribute('max');
+    if (min == null || max == null) return;
+    const host = control.closest('.eq-cell') || control.closest('label') || control.parentElement;
+    if (!host) return;
+    let hint = host.querySelector(':scope > .control-range-hint');
+    if (!hint) {
+      hint = document.createElement('small');
+      hint.className = 'control-range-hint';
+      host.appendChild(hint);
+    }
+    const unit = controlHintUnit(control);
+    hint.textContent = `Phạm vi: ${formatHintNumber(min)} – ${formatHintNumber(max)}${unit}`;
+    hint.title = 'Giá trị tối thiểu và tối đa được firmware hỗ trợ';
   });
 }
 
@@ -1685,6 +1739,7 @@ function renderPreampRows(side = 'l') {
       </div>
     `).join('');
   tableBody.innerHTML = rows;
+  refreshControlHints(tableBody);
 }
 
 function syncBandChipUI(side = 'l') {
@@ -2203,6 +2258,7 @@ setBleToggleUI();
 setBleLinkState('Chưa kết nối BLE Web', 'bad');
 appendRxLog('Giao diện đã sẵn sàng. Đang chờ dữ liệu BLE từ thiết bị...');
 initRangeLiveValues();
+refreshControlHints();
 applyHardwareVolumeOwnership();
 renderFreqAxis('l');
 renderFreqAxis('r');
