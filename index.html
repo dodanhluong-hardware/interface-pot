@@ -1,0 +1,480 @@
+﻿<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5, user-scalable=yes" />
+  <title>DSP Interface - Channel First</title>
+  <meta name="theme-color" content="#f3f6f8" />
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" type="image/png" sizes="192x192" href="./pwa-icon-192.png" />
+  <link rel="apple-touch-icon" sizes="192x192" href="./pwa-icon-192.png" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <button id="btn-sidebar-toggle" class="icon-btn" title="Ẩn/hiện sidebar" aria-label="Ẩn hoặc hiện menu">☰</button>
+      <div class="app-identity" aria-label="Sound Programming">
+        <img src="./pwa-icon-192.png" alt="" width="34" height="34" />
+        <span>SOUND PROGRAMMING</span>
+      </div>
+      <div class="topbar-brand">
+        <div id="topbar-panel-title" class="topbar-panel-title">Kênh Trái (L)</div>
+      </div>
+    </div>
+  </header>
+
+  <div id="sidebar-backdrop" class="sidebar-backdrop" aria-hidden="true"></div>
+  <div class="layout">
+    <aside class="sidebar">
+      <button id="btn-sidebar-close" class="sidebar-close-btn" title="Ẩn menu" aria-label="Đóng menu">☰</button>
+      <button class="tab" data-panel="connect">Kết nối</button>
+      <button class="tab active" data-panel="ch-l">Kênh Trái (L)</button>
+      <button class="tab" data-panel="ch-r">Kênh Phải (R)</button>
+      <button class="tab" data-panel="ch-sub">Kênh Sub</button>
+      <button class="tab" data-panel="mic">Mic</button>
+      <button class="tab" data-panel="system">Hệ thống</button>
+    </aside>
+
+    <main>
+      <section class="panel" id="connect">
+        <h2>Kết nối</h2>
+        <div class="grid">
+          <div class="card">
+            <h3>Điều khiển kết nối BLE</h3>
+            <div class="row connect-row">
+              <button id="btn-ble-toggle">Kết nối</button>
+            </div>
+            <p id="ble-link-state" class="ble-link-state">Trạng thái kết nối: Chưa kết nối BLE Web</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel active" id="ch-l">
+        <h2>Kênh Trái (L)</h2>
+        <div class="block-grid">
+          <details class="card output-control-card" open>
+            <summary>Điều khiển đầu ra</summary>
+            <div class="grid">
+              <label>Âm lượng (Gain)<input id="l-gain" type="range" min="0" max="100" value="72" /></label>
+            </div>
+          </details>
+
+          <details class="card" open>
+            <summary>EQ tiền khuếch đại (9 dải)</summary>
+            <div class="eq-panel">
+              <div class="eq-chart">
+                <div class="db-axis">
+                  <span>+12 dB</span><span>+10 dB</span><span>+8 dB</span><span>+6 dB</span><span>+4 dB</span><span>+2 dB</span>
+                  <span>0 dB</span>
+                  <span>-2 dB</span><span>-4 dB</span><span>-6 dB</span><span>-8 dB</span><span>-10 dB</span><span>-12 dB</span>
+                </div>
+                <div class="eq-graph v41">
+                  <div class="eq-zero-line"></div>
+                  <svg viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true">
+                    <path id="eq-path-l" d="M 0 15 L 100 15"></path>
+                    <g id="eq-labels-l"></g>
+                    <g id="eq-points-l"></g>
+                  </svg>
+                </div>
+              </div>
+              <div class="freq-row" data-side="l"><span>50</span><span>100</span><span>200</span><span>500</span><span>1k</span><span>2k</span><span>5k</span><span>10k</span><span>20k</span></div>
+              <div class="band-chip-row">
+                <button class="band-chip active" data-band="0">F0</button><button class="band-chip active" data-band="1">F1</button><button class="band-chip active" data-band="2">F2</button><button class="band-chip" data-band="3">F3</button><button class="band-chip" data-band="4">F4</button><button class="band-chip" data-band="5">F5</button><button class="band-chip" data-band="6">F6</button><button class="band-chip" data-band="7">F7</button><button class="band-chip" data-band="8">F8</button>
+              </div>
+              <div class="eq-table">
+                <div class="eq-table-head"><span>Dải</span><span>Loại</span><span>Tần số</span><span>Gain</span><span>Q</span></div>
+                <div id="eq-table-body-l"></div>
+              </div>
+            </div>
+          </details>
+
+          <details class="card">
+            <summary>EQ động Stereo (L + R)</summary>
+            <div class="dynamics-wrap">
+              <div class="dyn-card dyn-card-eq">
+                <div class="dsp-runtime-header">
+                  <span>Dùng chung cho hai kênh nhạc (Stereo-linked)</span>
+                  <button id="dyn-eq-toggle" class="tiny-toggle" type="button" aria-pressed="true" aria-label="Bật tắt Dynamic EQ">
+                    <span class="tiny-toggle-knob" aria-hidden="true"></span>
+                  </button>
+                </div>
+                <div class="dyn-faders dyn-faders-wide">
+                  <label class="dyn-fader"><span>Kệ thấp (Low Shelf)</span><div class="dyn-fader-rail"><input id="dyn-low-freq" type="range" min="50" max="500" value="100" data-unit="Hz" /></div></label>
+                  <label class="dyn-fader"><span>Kệ cao (High Shelf)</span><div class="dyn-fader-rail"><input id="dyn-high-freq" type="range" min="2000" max="12000" value="8000" data-unit="Hz" /></div></label>
+                  <label class="dyn-fader"><span>Trầm thấp</span><div class="dyn-fader-rail"><input id="dyn-low-bass" type="range" min="-18" max="18" step="0.5" value="3" data-unit="dB" /></div></label>
+                  <label class="dyn-fader"><span>Treble thấp</span><div class="dyn-fader-rail"><input id="dyn-low-treble" type="range" min="-18" max="18" step="0.5" value="2" data-unit="dB" /></div></label>
+                  <label class="dyn-fader"><span>Trầm cao</span><div class="dyn-fader-rail"><input id="dyn-high-bass" type="range" min="-18" max="18" step="0.5" value="-1" data-unit="dB" /></div></label>
+                  <label class="dyn-fader"><span>Treble cao</span><div class="dyn-fader-rail"><input id="dyn-high-treble" type="range" min="-18" max="18" step="0.5" value="-2" data-unit="dB" /></div></label>
+                  <label class="dyn-fader"><span>Ngưỡng thấp</span><div class="dyn-fader-rail"><input id="dyn-th-low" type="range" min="-90" max="0" value="-45" data-unit="dB" /></div></label>
+                  <label class="dyn-fader"><span>Ngưỡng thường</span><div class="dyn-fader-rail"><input id="dyn-th-normal" type="range" min="-90" max="0" value="-24" data-unit="dB" /></div></label>
+                  <label class="dyn-fader"><span>Ngưỡng cao</span><div class="dyn-fader-rail"><input id="dyn-th-high" type="range" min="-90" max="0" value="-8" data-unit="dB" /></div></label>
+                  <label class="dyn-fader"><span>Tấn công (Attack)</span><div class="dyn-fader-rail"><input id="dyn-attack" type="range" min="1" max="500" value="80" data-unit="ms" /></div></label>
+                  <label class="dyn-fader"><span>Nhả (Release)</span><div class="dyn-fader-rail"><input id="dyn-release" type="range" min="10" max="2000" value="500" data-unit="ms" /></div></label>
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <details class="card">
+            <summary>Nén Stereo toàn dải (DRC)</summary>
+            <div class="dynamics-wrap">
+              <div class="dyn-card">
+                <div class="dsp-runtime-header">
+                  <span>Tự động điều chỉnh độ nén đồng thời cho kênh trái và phải</span>
+                  <button id="drc-toggle" class="tiny-toggle" type="button" aria-pressed="true" aria-label="Bật tắt DRC">
+                    <span class="tiny-toggle-knob" aria-hidden="true"></span>
+                  </button>
+                </div>
+                <div class="drc-layout">
+                  <div class="drc-graph" id="drc-graph">
+                    <svg viewBox="0 0 100 100" preserveAspectRatio="none">
+                      <line class="drc-axis" x1="10" y1="90" x2="10" y2="10"></line>
+                      <line class="drc-axis" x1="10" y1="90" x2="92" y2="90"></line>
+                      <text class="drc-label" x="11.8" y="13.5">dB Out</text>
+                      <text class="drc-label" x="80.5" y="88.2">dB In</text>
+                      <text class="drc-tick drc-tick-x" x="16" y="88">-80</text>
+                      <text class="drc-tick drc-tick-x" x="32" y="88">-60</text>
+                      <text class="drc-tick drc-tick-x" x="48" y="88">-40</text>
+                      <text class="drc-tick drc-tick-x" x="64" y="88">-20</text>
+                      <text class="drc-tick drc-tick-x" x="80" y="88">0</text>
+                      <text class="drc-tick drc-tick-y" x="8" y="75">-60</text>
+                      <text class="drc-tick drc-tick-y" x="8" y="58">-40</text>
+                      <text class="drc-tick drc-tick-y" x="8" y="41">-20</text>
+                      <text class="drc-tick drc-tick-y" x="8" y="24">0</text>
+                      <line class="drc-ref" x1="10" y1="90" x2="92" y2="10"></line>
+                      <polyline id="drc-curve" points="10,90 92,10"></polyline>
+                    </svg>
+                  </div>
+                  <div class="drc-controls">
+                    <label>Tiền khuếch đại (PreGain, dB)<input id="drc-pregain" type="number" min="-12" max="12" step="1" value="0"></label>
+                    <label>Ngưỡng (Threshold, dB)<input id="drc-threshold" type="number" min="-90" max="0" step="1" value="-6"></label>
+                    <label>Tỷ lệ nén (Ratio :1)<input id="drc-ratio" type="number" min="1" max="20" step="1" value="4"></label>
+                    <label>Tấn công (Attack, ms)<input id="drc-attack" type="number" min="1" max="500" step="1" value="10"></label>
+                    <label>Nhả (Release, ms)<input id="drc-release" type="number" min="10" max="2000" step="1" value="250"></label>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </details>
+
+        </div>
+      </section>
+
+      <section class="panel" id="ch-r">
+        <h2>Kênh Phải (R)</h2>
+        <div class="block-grid">
+          <details class="card output-control-card" open>
+            <summary>Điều khiển đầu ra</summary>
+            <div class="grid">
+              <label>Âm lượng (Gain)<input id="r-gain" type="range" min="0" max="100" value="72" /></label>
+            </div>
+          </details>
+
+          <details class="card" open>
+            <summary>EQ tiền khuếch đại (9 dải)</summary>
+            <div class="eq-panel">
+              <div class="eq-chart">
+                <div class="db-axis">
+                  <span>+12 dB</span><span>+10 dB</span><span>+8 dB</span><span>+6 dB</span><span>+4 dB</span><span>+2 dB</span>
+                  <span>0 dB</span>
+                  <span>-2 dB</span><span>-4 dB</span><span>-6 dB</span><span>-8 dB</span><span>-10 dB</span><span>-12 dB</span>
+                </div>
+                <div class="eq-graph v41">
+                  <div class="eq-zero-line"></div>
+                  <svg viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true">
+                    <path id="eq-path-r" d="M 0 15 L 100 15"></path>
+                    <g id="eq-labels-r"></g>
+                    <g id="eq-points-r"></g>
+                  </svg>
+                </div>
+              </div>
+              <div class="freq-row" data-side="r"><span>50</span><span>100</span><span>200</span><span>500</span><span>1k</span><span>2k</span><span>5k</span><span>10k</span><span>20k</span></div>
+              <div class="band-chip-row">
+                <button class="band-chip active" data-band="0">F0</button><button class="band-chip active" data-band="1">F1</button><button class="band-chip active" data-band="2">F2</button><button class="band-chip" data-band="3">F3</button><button class="band-chip" data-band="4">F4</button><button class="band-chip" data-band="5">F5</button><button class="band-chip" data-band="6">F6</button><button class="band-chip" data-band="7">F7</button><button class="band-chip" data-band="8">F8</button>
+              </div>
+              <div class="eq-table">
+                <div class="eq-table-head"><span>Dải</span><span>Loại</span><span>Tần số</span><span>Gain</span><span>Q</span></div>
+                <div id="eq-table-body-r"></div>
+              </div>
+            </div>
+          </details>
+
+          <div class="card shared-dsp-note">
+            EQ động và DRC được xử lý liên kết Stereo cho cả L/R. Điều chỉnh tại mục Kênh Trái (L).
+          </div>
+
+        </div>
+      </section>
+
+      <section class="panel" id="ch-sub">
+        <h2>Kênh Sub</h2>
+        <div class="block-grid">
+          <details class="card output-control-card" open>
+            <summary>Điều khiển đầu ra</summary>
+            <div class="grid">
+              <label>Âm lượng (Gain)<input id="sub-gain" type="range" min="0" max="100" value="68" /></label>
+            </div>
+          </details>
+
+          <details class="card" open>
+            <summary>EQ tiền khuếch đại (9 dải)</summary>
+            <div class="eq-panel">
+              <div class="eq-chart">
+                <div class="db-axis">
+                  <span>+12 dB</span><span>+10 dB</span><span>+8 dB</span><span>+6 dB</span><span>+4 dB</span><span>+2 dB</span>
+                  <span>0 dB</span>
+                  <span>-2 dB</span><span>-4 dB</span><span>-6 dB</span><span>-8 dB</span><span>-10 dB</span><span>-12 dB</span>
+                </div>
+                <div class="eq-graph v41">
+                  <div class="eq-zero-line"></div>
+                  <svg viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true">
+                    <path id="eq-path-sub" d="M 0 15 L 100 15"></path>
+                    <g id="eq-labels-sub"></g>
+                    <g id="eq-points-sub"></g>
+                  </svg>
+                </div>
+              </div>
+              <div class="freq-row" data-side="sub"><span>50</span><span>100</span><span>200</span><span>500</span><span>1k</span><span>2k</span><span>5k</span><span>10k</span><span>20k</span></div>
+              <div class="band-chip-row">
+                <button class="band-chip active" data-band="0">F0</button><button class="band-chip active" data-band="1">F1</button><button class="band-chip active" data-band="2">F2</button><button class="band-chip active" data-band="3">F3</button><button class="band-chip active" data-band="4">F4</button><button class="band-chip active" data-band="5">F5</button><button class="band-chip active" data-band="6">F6</button><button class="band-chip active" data-band="7">F7</button><button class="band-chip active" data-band="8">F8</button>
+              </div>
+              <div class="eq-table">
+                <div class="eq-table-head"><span>Dải</span><span>Loại</span><span>Tần số</span><span>Gain</span><span>Q</span></div>
+                <div id="eq-table-body-sub"></div>
+              </div>
+            </div>
+          </details>
+
+          <details class="card" open style="display:none">
+            <summary>Chế độ (Mode)</summary>
+            <div class="phase-wrap">
+              <button id="sub-mode-toggle" class="sub-segment-toggle" type="button" aria-pressed="true" data-mode="mono">
+                <span class="sub-segment-label mode-label-stereo">STEREO</span>
+                <span class="sub-segment-knob" aria-hidden="true"></span>
+                <span class="sub-segment-label mode-label-mono is-active">MONO</span>
+              </button>
+              <div id="sub-mode-state" class="sub-segment-state">Hiện tại: MONO</div>
+            </div>
+          </details>
+
+          <details class="card" open>
+            <summary>Pha (Phase)</summary>
+            <div class="phase-wrap">
+              <button id="sub-phase-toggle" class="sub-segment-toggle" type="button" aria-pressed="false" data-phase="0">
+                <span class="sub-segment-label phase-label-0 is-active">0°</span>
+                <span class="sub-segment-knob" aria-hidden="true"></span>
+                <span class="sub-segment-label phase-label-180">180°</span>
+              </button>
+              <div id="sub-phase-state" class="sub-segment-state">Hiện tại: 0°</div>
+            </div>
+          </details>
+
+          <details class="card" open style="display:none">
+            <summary>Đường trễ (Delay Line)</summary>
+            <div class="grid">
+              <label>Delay<input id="sub-delay-ms" type="range" min="0" max="50" step="0.1" value="0" data-unit="ms" /></label>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <section class="panel" id="mic">
+        <h2>Mic</h2>
+        <div class="block-grid">
+          <details class="card output-control-card" open>
+            <summary>Điều khiển đầu ra</summary>
+            <div class="grid">
+              <label>Âm lượng Mic (Gain)<input id="mic-output-gain" type="range" min="0" max="100" value="58" /></label>
+            </div>
+          </details>
+
+          <details class="card" open>
+            <summary>EQ tiền khuếch đại Mic 1 (6 dải)</summary>
+            <div class="eq-panel">
+              <div class="eq-chart">
+                <div class="db-axis">
+                  <span>+12 dB</span><span>+10 dB</span><span>+8 dB</span><span>+6 dB</span><span>+4 dB</span><span>+2 dB</span>
+                  <span>0 dB</span>
+                  <span>-2 dB</span><span>-4 dB</span><span>-6 dB</span><span>-8 dB</span><span>-10 dB</span><span>-12 dB</span>
+                </div>
+                <div class="eq-graph v41">
+                  <div class="eq-zero-line"></div>
+                  <svg viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true">
+                    <path id="eq-path-mic1" d="M 0 15 L 100 15"></path>
+                    <g id="eq-labels-mic1"></g>
+                    <g id="eq-points-mic1"></g>
+                  </svg>
+                </div>
+              </div>
+              <div class="freq-row" data-side="mic1"><span>50</span><span>100</span><span>200</span><span>500</span><span>1k</span><span>2k</span><span>5k</span><span>10k</span><span>20k</span></div>
+              <div id="mic1-band-chip-row" class="band-chip-row">
+                <button class="band-chip active" data-band="0">F0</button><button class="band-chip active" data-band="1">F1</button><button class="band-chip active" data-band="2">F2</button><button class="band-chip active" data-band="3">F3</button><button class="band-chip active" data-band="4">F4</button><button class="band-chip active" data-band="5">F5</button>
+              </div>
+              <div class="eq-table">
+                <div class="eq-table-head"><span>Dải</span><span>Loại</span><span>Tần số</span><span>Gain</span><span>Q</span></div>
+                <div id="eq-table-body-mic1"></div>
+              </div>
+            </div>
+          </details>
+
+          <details class="card" open>
+            <summary>EQ tiền khuếch đại Mic 2 (6 dải)</summary>
+            <div class="eq-panel">
+              <div class="eq-chart">
+                <div class="db-axis">
+                  <span>+12 dB</span><span>+10 dB</span><span>+8 dB</span><span>+6 dB</span><span>+4 dB</span><span>+2 dB</span>
+                  <span>0 dB</span>
+                  <span>-2 dB</span><span>-4 dB</span><span>-6 dB</span><span>-8 dB</span><span>-10 dB</span><span>-12 dB</span>
+                </div>
+                <div class="eq-graph v41">
+                  <div class="eq-zero-line"></div>
+                  <svg viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true">
+                    <path id="eq-path-mic2" d="M 0 15 L 100 15"></path>
+                    <g id="eq-labels-mic2"></g>
+                    <g id="eq-points-mic2"></g>
+                  </svg>
+                </div>
+              </div>
+              <div class="freq-row" data-side="mic2"><span>50</span><span>100</span><span>200</span><span>500</span><span>1k</span><span>2k</span><span>5k</span><span>10k</span><span>20k</span></div>
+              <div id="mic2-band-chip-row" class="band-chip-row">
+                <button class="band-chip active" data-band="0">F0</button><button class="band-chip active" data-band="1">F1</button><button class="band-chip active" data-band="2">F2</button><button class="band-chip active" data-band="3">F3</button><button class="band-chip active" data-band="4">F4</button><button class="band-chip active" data-band="5">F5</button>
+              </div>
+              <div class="eq-table">
+                <div class="eq-table-head"><span>Dải</span><span>Loại</span><span>Tần số</span><span>Gain</span><span>Q</span></div>
+                <div id="eq-table-body-mic2"></div>
+              </div>
+            </div>
+          </details>
+
+          <details class="card" open>
+            <summary>Hiệu ứng Reverb</summary>
+            <div class="dynamics-wrap">
+              <div class="dyn-card dyn-card-eq mic-fx-card">
+                <div class="dyn-faders fx-six">
+                  <label class="dyn-fader"><span>Mức hiệu ứng (Level)</span><div class="dyn-fader-rail"><input id="rv-level" type="range" min="0" max="100" value="70" /></div></label>
+                  <label class="dyn-fader"><span>Trễ trước (Pre Delay)</span><div class="dyn-fader-rail"><input id="rv-pre-delay" type="range" min="0" max="100" value="20" data-unit="ms" /></div></label>
+                  <label class="dyn-fader"><span>Độ ngân (Decay)</span><div class="dyn-fader-rail"><input id="rv-decay" type="range" min="0.1" max="10" step="0.1" value="1.8" /></div></label>
+                  <label class="dyn-fader"><span>Tỷ lệ trộn (Mix)</span><div class="dyn-fader-rail"><input id="rv-mix" type="range" min="0" max="100" value="80" /></div></label>
+                  <label class="dyn-fader"><span>Không gian (Room)</span><div class="dyn-fader-rail"><input id="rv-room" type="range" min="0" max="100" value="70" /></div></label>
+                  <label class="dyn-fader"><span>Giảm cao (Damping)</span><div class="dyn-fader-rail"><input id="rv-damping" type="range" min="0" max="100" value="30" /></div></label>
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <details class="card" open>
+            <summary>Hiệu ứng Echo</summary>
+            <div class="dynamics-wrap">
+              <div class="dyn-card dyn-card-eq mic-fx-card">
+                <div class="dyn-faders fx-four">
+                  <label class="dyn-fader"><span>Mức hiệu ứng (Level)</span><div class="dyn-fader-rail"><input id="echo-level" type="range" min="0" max="100" value="70" /></div></label>
+                  <label class="dyn-fader"><span>Thời gian trễ (Delay)</span><div class="dyn-fader-rail"><input id="echo-delay" type="range" min="1" max="300" value="180" data-unit="ms" /></div></label>
+                  <label class="dyn-fader"><span>Lặp lại (Repeat)</span><div class="dyn-fader-rail"><input id="echo-repeat" type="range" min="0" max="100" value="35" /></div></label>
+                  <label class="dyn-fader"><span>Tỷ lệ trộn (Mix)</span><div class="dyn-fader-rail"><input id="echo-mix" type="range" min="0" max="100" value="55" /></div></label>
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <details class="card" open>
+            <summary>Chống hú (Anti-Feedback)</summary>
+            <div class="grid">
+              <label>Dịch tần chống hú<input id="mic-afb-freq" type="range" min="0" max="10" step="0.1" value="5.0" data-unit="Hz" /></label>
+              <div class="mic-switch-row">
+                <span>Chống hú</span>
+                <button id="mic-afb-toggle" class="tiny-toggle" type="button" aria-pressed="true">
+                  <span class="tiny-toggle-knob" aria-hidden="true"></span>
+                </button>
+              </div>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <section class="panel" id="system">
+        <h2>Hệ thống</h2>
+        <div class="grid two">
+          <div class="card">
+            <h3>Cấu hình nhanh</h3>
+            <div class="grid one">
+              <label>Mẫu EQ
+                <select id="system-eq-preset">
+                  <option value="eq1">Flat - Trung tính</option>
+                  <option value="eq2">Pop - Sáng, rõ vocal</option>
+                  <option value="eq3">Rock - Mạnh và sáng</option>
+                  <option value="eq4">Dance/EDM - Bass mạnh</option>
+                  <option value="eq5">Vocal - Nổi giọng hát</option>
+                  <option value="eq6">Jazz - Ấm, tự nhiên</option>
+                  <option value="eq7">Classical - Cân bằng rộng</option>
+                  <option value="eq8">Bass Boost - Tăng dải trầm</option>
+                  <option value="eq9">Acoustic - Chi tiết</option>
+                </select>
+              </label>
+              <p class="system-note">Preset áp dụng cho EQ nhạc L/R theo 9 dải tần. Sau khi chọn, bấm <strong>Lưu</strong> để ghi vào Flash.</p>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>Tên thiết bị</h3>
+            <div class="grid two">
+              <label>Tên Bluetooth
+                <input id="bt-name" type="text" value="MVAPP-BP1048-2" maxlength="17" />
+              </label>
+              <label>Tên BLE
+                <input id="ble-name" type="text" value="MVAPP-BP1048-2" maxlength="17" />
+              </label>
+            </div>
+          </div>
+
+          <div class="card system-control-card">
+            <h3>Micro không dây (KC)</h3>
+            <label>Chế độ theo dõi chân KC
+              <select id="kc-mode">
+                <option value="0" selected>Không theo dõi KC</option>
+                <option value="1">KC tích cực mức thấp</option>
+                <option value="2">KC tích cực mức cao</option>
+              </select>
+            </label>
+            <p class="system-note">Mặc định không theo dõi để đường micro luôn mở. Chỉ chọn mức thấp hoặc mức cao sau khi đã đo đúng logic KC của bo micro.</p>
+          </div>
+
+          <div class="card system-control-card reset-card">
+            <h3>Khôi phục mặc định</h3>
+            <p class="system-note">Đưa toàn bộ thông số DSP và chế độ KC về cấu hình gốc. Tên Bluetooth và BLE được giữ nguyên.</p>
+            <button id="btn-reset-defaults" class="reset-defaults-btn" type="button">Đặt lại thông số</button>
+            <p class="system-note save-note">Thay đổi chỉ được ghi vào Flash sau khi bấm <strong>Lưu</strong>.</p>
+          </div>
+
+          <div class="card system-log-card span-two">
+            <h3>Nhật ký từ thiết bị</h3>
+            <div class="row system-log-actions">
+              <button id="btn-log-clear" type="button">Xóa nhật ký</button>
+            </div>
+            <pre id="rx-log-box" class="rx-log-box" aria-live="polite">[đang chờ] Hãy kết nối BLE để nhận trạng thái từ thiết bị.</pre>
+          </div>
+
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="pwa-bar" class="pwa-bar" hidden>
+    <span class="pwa-text">Nhấn Cài đặt để thêm DSP Tool lên màn hình chính. Lần sau chỉ cần bấm icon ứng dụng để mở nhanh.</span>
+    <div class="pwa-actions">
+      <button id="btn-pwa-install" class="pwa-install-btn">Cài đặt</button>
+      <button id="btn-pwa-close" class="pwa-close-btn" type="button">Ẩn</button>
+    </div>
+  </div>
+
+  <footer class="bottom-bar">
+    <button id="btn-save" class="save-btn">Lưu</button>
+    <div class="bottom-status">
+      <span id="conn-state" class="chip bad">Chưa kết nối</span>
+      <span id="tx-state" class="chip">Gửi: chờ</span>
+    </div>
+  </footer>
+
+  <script src="./app.js"></script>
+</body>
+</html>
