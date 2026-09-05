@@ -786,7 +786,7 @@ function handleBleRxNotification(event) {
           syncSubPhaseUI(0);
           if (kcModeSelect) kcModeSelect.value = '0';
           appendRxLog('RESET ACK; đang đọc lại toàn bộ cấu hình mặc định');
-          window.setTimeout(() => { requestDspConfigFromChip().catch(() => {}); }, 80);
+          window.setTimeout(() => { syncAfterResetDefaults().catch(() => {}); }, 250);
         }
       } else {
         setTxStatus(ok ? 'đã xác nhận' : `xác nhận lỗi ${bytes[3]}`, ok ? 'ok' : 'bad');
@@ -1187,6 +1187,24 @@ async function requestDspConfigFromChip() {
   });
   await sendTx('config-get');
   return completion;
+}
+
+async function syncAfterResetDefaults() {
+  const synced = await requestDspConfigFromChip();
+  if (!synced) {
+    appendRxLog('Không đồng bộ được giao diện sau RESET; giữ nguyên giá trị hiện tại');
+    return;
+  }
+  // Bản OLED/EC11 không có biến trở âm lượng: mức nhạc an toàn sau reset là 40%.
+  // Bản 3 pot bỏ qua vì giá trị thực do ADC phần cứng quyết định.
+  if (!ADC_VOLUME_MODE) {
+    await sendTx('l-gain:40');
+    await sendTx('r-gain:40');
+    setControlValueFromMcu('l-gain', 40);
+    setControlValueFromMcu('r-gain', 40);
+    appendRxLog('Âm lượng nhạc sau RESET được đặt an toàn ở 40%');
+  }
+  renderMcuConfigOnInterface();
 }
 
 function packetSignature(packet) {

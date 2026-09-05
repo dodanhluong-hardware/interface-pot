@@ -1,4 +1,4 @@
-const CACHE_NAME = 'dsp-interface-pot-v21-fader-cleanup-20260905';
+const CACHE_NAME = 'dsp-interface-pot-v22-reset-sync-music40-20260905';
 const ASSETS = [
   './',
   './index.html',
