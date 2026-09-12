@@ -1,4 +1,4 @@
-const CACHE_NAME = 'dsp-interface-pot-v22-reset-sync-music40-20260905';
+const CACHE_NAME = 'dsp-interface-pot-v40-gatt-disconnect-20260906';
 const ASSETS = [
   './',
   './index.html',

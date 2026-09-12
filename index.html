@@ -10,7 +10,7 @@
   <link rel="apple-touch-icon" sizes="192x192" href="./pwa-icon-192.png" />
   <link rel="stylesheet" href="./styles.css" />
 </head>
-<body>
+<body class="connection-gate-active">
   <header class="topbar">
     <div class="topbar-left">
       <button id="btn-sidebar-toggle" class="icon-btn" title="Ẩn/hiện sidebar" aria-label="Ẩn hoặc hiện menu">☰</button>
@@ -21,14 +21,28 @@
       <div class="topbar-brand">
         <div id="topbar-panel-title" class="topbar-panel-title">Kênh Trái (L)</div>
       </div>
+      <div class="topbar-connection" aria-live="polite">
+        <span id="topbar-ble-state" class="topbar-ble-state">BLE: Chưa kết nối</span>
+        <button id="btn-ble-disconnect-top" class="topbar-disconnect" type="button">Ngắt kết nối</button>
+      </div>
     </div>
   </header>
 
   <div id="sidebar-backdrop" class="sidebar-backdrop" aria-hidden="true"></div>
+  <section id="connect-gate" class="connect-gate" aria-labelledby="connect-gate-title">
+    <div class="connect-gate-card">
+      <img src="./pwa-icon-192.png" alt="" width="72" height="72" class="connect-gate-logo" />
+      <p class="connect-gate-kicker">SOUND PROGRAMMING</p>
+      <h1 id="connect-gate-title">Kết nối thiết bị</h1>
+      <p class="connect-gate-description">Kết nối BLE với BP1048B2 để mở bảng điều khiển DSP.</p>
+      <button id="btn-ble-toggle" class="connect-gate-button">Kết nối</button>
+      <p id="ble-link-state" class="ble-link-state">Trạng thái kết nối: Chưa kết nối BLE Web</p>
+      <p class="connect-gate-hint">Lần đầu, hãy chọn thiết bị trong hộp thoại của trình duyệt.</p>
+    </div>
+  </section>
   <div class="layout">
     <aside class="sidebar">
       <button id="btn-sidebar-close" class="sidebar-close-btn" title="Ẩn menu" aria-label="Đóng menu">☰</button>
-      <button class="tab" data-panel="connect">Kết nối</button>
       <button class="tab active" data-panel="ch-l">Kênh Trái (L)</button>
       <button class="tab" data-panel="ch-r">Kênh Phải (R)</button>
       <button class="tab" data-panel="ch-sub">Kênh Sub</button>
@@ -37,19 +51,6 @@
     </aside>
 
     <main>
-      <section class="panel" id="connect">
-        <h2>Kết nối</h2>
-        <div class="grid">
-          <div class="card">
-            <h3>Điều khiển kết nối BLE</h3>
-            <div class="row connect-row">
-              <button id="btn-ble-toggle">Kết nối</button>
-            </div>
-            <p id="ble-link-state" class="ble-link-state">Trạng thái kết nối: Chưa kết nối BLE Web</p>
-          </div>
-        </div>
-      </section>
-
       <section class="panel active" id="ch-l">
         <h2>Kênh Trái (L)</h2>
         <div class="block-grid">
@@ -354,7 +355,7 @@
                 <div class="dyn-faders fx-six">
                   <label class="dyn-fader"><span>Mức hiệu ứng (Level)</span><div class="dyn-fader-rail"><input id="rv-level" type="range" min="0" max="100" value="70" /></div></label>
                   <label class="dyn-fader"><span>Trễ trước (Pre Delay)</span><div class="dyn-fader-rail"><input id="rv-pre-delay" type="range" min="0" max="100" value="20" data-unit="ms" /></div></label>
-                  <label class="dyn-fader"><span>Độ ngân (Decay)</span><div class="dyn-fader-rail"><input id="rv-decay" type="range" min="0.1" max="10" step="0.1" value="1.8" /></div></label>
+                   <label class="dyn-fader"><span>Độ ngân (Decay tương đối)</span><div class="dyn-fader-rail"><input id="rv-decay" type="range" min="0" max="100" step="1" value="18" /></div></label>
                   <label class="dyn-fader"><span>Tỷ lệ trộn (Mix)</span><div class="dyn-fader-rail"><input id="rv-mix" type="range" min="0" max="100" value="80" /></div></label>
                   <label class="dyn-fader"><span>Không gian (Room)</span><div class="dyn-fader-rail"><input id="rv-room" type="range" min="0" max="100" value="70" /></div></label>
                   <label class="dyn-fader"><span>Giảm cao (Damping)</span><div class="dyn-fader-rail"><input id="rv-damping" type="range" min="0" max="100" value="30" /></div></label>
@@ -423,8 +424,7 @@
                 <small class="control-range-hint">Phạm vi: 1 – 17 byte UTF-8</small>
               </label>
               <label>Tên BLE
-                <input id="ble-name" type="text" value="MVAPP-BP1048-2" maxlength="17" />
-                <small class="control-range-hint">Phạm vi: 1 – 17 byte UTF-8</small>
+                <input id="ble-name" class="locked-control" type="text" value="SoundProgramming" readonly aria-readonly="true" />
               </label>
             </div>
           </div>

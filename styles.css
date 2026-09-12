@@ -659,6 +659,13 @@ input[type="range"],
 .tab {
   transition: border-color 140ms ease, box-shadow 160ms ease, transform 120ms ease, background 180ms ease, color 160ms ease;
 }
+.locked-control,
+input[readonly].locked-control {
+  opacity: 0.58;
+  color: #64748b;
+  background: #eef2f5;
+  cursor: not-allowed;
+}
 button:hover {
   border-color: #64d6ff;
   box-shadow: 0 0 0 1px rgba(100, 214, 255, 0.4), 0 10px 18px rgba(4, 12, 26, 0.45);
@@ -3728,6 +3735,12 @@ input[type="range"]::-moz-range-thumb { width: 13px; height: 13px; border: 3px s
 .hardware-owned-control input[type="range"] { cursor: not-allowed; }
 .hardware-owned-note { color: #7a8d94; }
 
+/* Compact range bounds on phone screens; they remain readable but do not
+ * compete with the primary control labels. */
+@media (max-width: 760px) {
+  .control-range-hint { font-size: 8.5px; line-height: 1.15; }
+}
+
 @media (max-width: 760px) {
   .topbar { min-height: 58px; }
   main { padding: 20px 13px 86px; }
@@ -3736,6 +3749,41 @@ input[type="range"]::-moz-range-thumb { width: 13px; height: 13px; border: 3px s
   details.card > summary { padding: 14px; }
   details.card > :not(summary) { padding-left: 14px; padding-right: 14px; }
 }
+
+/* Connection gate: the DSP workspace is inaccessible until BLE is ready. */
+.connect-gate { display: none; }
+body.connection-gate-active { padding-bottom: 0; }
+body.connection-gate-active .topbar,
+body.connection-gate-active .layout { display: none !important; }
+body.connection-gate-active .bottom-bar,
+body.connection-gate-active .pwa-bar { display: none !important; }
+body.connection-gate-active .connect-gate {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 28px 18px;
+}
+.connect-gate-card {
+  width: min(100%, 520px);
+  padding: clamp(28px, 6vw, 52px) clamp(22px, 6vw, 58px);
+  text-align: center;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+}
+.connect-gate-logo { display: block; margin: 0 auto 16px; border-radius: 18px; }
+.connect-gate-kicker { margin: 0 0 8px; color: var(--muted); font-size: 11px; font-weight: 750; letter-spacing: .16em; }
+.connect-gate-card h1 { margin: 0; color: var(--text); font-size: clamp(26px, 5vw, 36px); }
+.connect-gate-description { margin: 12px auto 24px; max-width: 360px; color: var(--muted); line-height: 1.5; }
+.connect-gate-button { min-width: 190px; min-height: 46px; font-size: 16px; font-weight: 750; }
+.connect-gate-card .ble-link-state { margin: 18px 0 0; }
+.connect-gate-hint { margin: 18px 0 0; color: var(--muted); font-size: 12px; }
+.topbar-connection { margin-left: auto; display: flex; align-items: center; gap: 9px; }
+.topbar-ble-state { color: var(--muted); font-size: 12px; font-weight: 700; }
+.topbar-ble-state.ok { color: #16866f; }
+.topbar-disconnect { min-height: 32px; padding: 0 11px; font-size: 12px; }
+.topbar-disconnect:disabled { display: none; }
 
 /* Product UI refinement 2026-09-05.
  * These rules are intentionally appended so they override the older theme
