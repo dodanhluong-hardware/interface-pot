@@ -441,6 +441,37 @@
             <p class="system-note">Mặc định không theo dõi để đường micro luôn mở. Chỉ chọn mức thấp hoặc mức cao sau khi đã đo đúng logic KC của bo micro.</p>
           </div>
 
+          <div class="card system-control-card startup-level-card">
+            <div class="system-card-heading">
+              <h3>Âm lượng khi bật nguồn</h3>
+              <span id="startup-level-status" class="user-mode-status" role="status">Dùng núm vật lý</span>
+            </div>
+            <div class="startup-level-grid">
+              <label>AUX
+                <select id="startup-aux-level" disabled>
+                  <option value="0">Giữ mức đã lưu</option>
+                  <option value="1">20%</option>
+                  <option value="2">40%</option>
+                  <option value="3">60%</option>
+                  <option value="4">80%</option>
+                  <option value="5">100%</option>
+                </select>
+              </label>
+              <label>Micro
+                <select id="startup-mic-level" disabled>
+                  <option value="0">Giữ mức đã lưu</option>
+                  <option value="1">20%</option>
+                  <option value="2">40%</option>
+                  <option value="3">60%</option>
+                  <option value="4">80%</option>
+                  <option value="5">100%</option>
+                </select>
+              </label>
+            </div>
+            <button id="btn-startup-level-save" type="button" disabled>Lưu mức khởi động</button>
+            <p class="system-note">Phiên bản này nhận mức Music và Micro trực tiếp từ ba núm điều chỉnh trên thiết bị.</p>
+          </div>
+
           <div class="card system-control-card user-mode-card">
             <div class="system-card-heading">
               <h3>Bộ nhớ chế độ</h3>

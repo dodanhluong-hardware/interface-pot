@@ -14,6 +14,10 @@ const userModeSelect = document.getElementById('user-mode-select');
 const btnModeSave = document.getElementById('btn-mode-save');
 const btnModeApply = document.getElementById('btn-mode-apply');
 const userModeStatus = document.getElementById('user-mode-status');
+const startupAuxLevel = document.getElementById('startup-aux-level');
+const startupMicLevel = document.getElementById('startup-mic-level');
+const btnStartupLevelSave = document.getElementById('btn-startup-level-save');
+const startupLevelStatus = document.getElementById('startup-level-status');
 const powerVoltage = document.getElementById('power-voltage');
 const powerState = document.getElementById('power-state');
 const chipDevice = document.getElementById('chip-device');
@@ -46,6 +50,7 @@ const DSP_CMD_SET_KC_MODE = 0x0d;
 const DSP_CMD_RESET_DEFAULTS = 0x0e;
 const DSP_CMD_MODE_SAVE = 0x0f;
 const DSP_CMD_MODE_APPLY = 0x10;
+const DSP_CMD_SET_STARTUP_LEVELS = 0x11;
 /* Keep reset requests at least this far apart so the MCU can finish its
  * reset/ACK/config snapshot sequence even if the user taps repeatedly. */
 const RESET_MIN_INTERVAL_MS = 2000;
@@ -160,6 +165,8 @@ let resetLastRequestAt = 0;
 let modeAckTimer = null;
 let pendingUserMode = null;
 let activeUserModeSlot = null;
+let startupLevelAckTimer = null;
+let startupLevelSaving = false;
 const rxLogLines = [];
 let lastFriendlySystemStatus = '';
 const DB_MIN = -12;
@@ -320,6 +327,7 @@ function setConnUI() {
     topbarBleState.textContent = connected ? 'BLE: Đã kết nối' : 'BLE: Chưa kết nối';
     topbarBleState.classList.toggle('ok', connected);
   }
+  setStartupLevelBusy(startupLevelSaving);
 }
 
 function setBleLinkState(text, mode = 'normal') {
@@ -360,10 +368,14 @@ function applyBleDisconnectedState(text = 'Chưa kết nối BLE Web') {
   if (modeAckTimer) clearTimeout(modeAckTimer);
   modeAckTimer = null;
   pendingUserMode = null;
+  if (startupLevelAckTimer) clearTimeout(startupLevelAckTimer);
+  startupLevelAckTimer = null;
+  startupLevelSaving = false;
   if (btnSave) btnSave.disabled = false;
   if (btnResetDefaults) btnResetDefaults.disabled = false;
   connected = false;
   setUserModeBusy(false);
+  setStartupLevelStatus('Chưa đồng bộ');
   activeUserModeSlot = null;
   setUserModeStatus('Chưa chọn mode');
   resetPowerStatus();
@@ -779,6 +791,20 @@ function setUserModeStatus(message, state = '') {
   userModeStatus.dataset.state = state;
 }
 
+function setStartupLevelStatus(message, state = '') {
+  if (!startupLevelStatus) return;
+  startupLevelStatus.textContent = ADC_VOLUME_MODE ? 'Dùng núm vật lý' : message;
+  startupLevelStatus.dataset.state = ADC_VOLUME_MODE ? '' : state;
+}
+
+function setStartupLevelBusy(busy) {
+  const unavailable = ADC_VOLUME_MODE;
+  if (startupAuxLevel) startupAuxLevel.disabled = unavailable || busy;
+  if (startupMicLevel) startupMicLevel.disabled = unavailable || busy;
+  if (btnStartupLevelSave) btnStartupLevelSave.disabled = unavailable || busy || !connected;
+  document.querySelector('.startup-level-card')?.classList.toggle('is-hardware-owned', unavailable);
+}
+
 function renderActiveUserMode() {
   if (userModeSelect && Number.isInteger(activeUserModeSlot)) {
     userModeSelect.value = String(activeUserModeSlot);
@@ -907,6 +933,15 @@ function applyMcuConfigItem(value, bytes) {
     return true;
   }
 
+  if (command === DSP_CMD_SET_STARTUP_LEVELS && bytes.length === 5) {
+    const auxLevel = Math.min(5, bytes[3]);
+    const micLevel = Math.min(5, bytes[4]);
+    if (startupAuxLevel) startupAuxLevel.value = String(auxLevel);
+    if (startupMicLevel) startupMicLevel.value = String(micLevel);
+    setStartupLevelStatus('Đã đồng bộ', 'ok');
+    return true;
+  }
+
   if (command === 0x02 && bytes.length === 13) {
     const sides = ['l', 'r', 'sub', 'mic1', 'mic2'];
     const types = ['PK', 'LS', 'HS', 'LP', 'HP', 'BP', 'NOTCH', 'LP', 'HP'];
@@ -1005,6 +1040,15 @@ function handleBleRxNotification(event) {
         }
       } else if (command === DSP_CMD_MODE_SAVE || command === DSP_CMD_MODE_APPLY) {
         handleUserModeAck(command, bytes[3]);
+      } else if (command === DSP_CMD_SET_STARTUP_LEVELS) {
+        if (startupLevelAckTimer) clearTimeout(startupLevelAckTimer);
+        startupLevelAckTimer = null;
+        startupLevelSaving = false;
+        setStartupLevelBusy(false);
+        setStartupLevelStatus(ok ? 'Đã lưu' : 'Không lưu được', ok ? 'ok' : 'bad');
+        setTxStatus(ok ? 'đã lưu mức khởi động' : `lưu mức khởi động lỗi ${bytes[3]}`,
+          ok ? 'ok' : 'bad');
+        appendRxLog(ok ? 'Đã lưu mức âm lượng khởi động' : 'Không lưu được mức âm lượng khởi động');
       } else {
         setTxStatus(ok ? 'đã xác nhận' : `xác nhận lỗi ${bytes[3]}`, ok ? 'ok' : 'bad');
       }
@@ -1304,6 +1348,11 @@ function buildBlePacket(tag) {
   if (tag === 'save') return Uint8Array.of(0xa5, DSP_CMD_SAVE_CONFIG);
   if (tag === 'config-get') return Uint8Array.of(0xa5, DSP_CMD_GET_CONFIG);
   if (tag === 'reset-defaults') return Uint8Array.of(0xa5, DSP_CMD_RESET_DEFAULTS);
+  const startupLevelsMatch = tag.match(/^startup-levels_([0-5])_([0-5])$/);
+  if (startupLevelsMatch) {
+    return Uint8Array.of(0xa5, DSP_CMD_SET_STARTUP_LEVELS,
+      Number(startupLevelsMatch[1]), Number(startupLevelsMatch[2]));
+  }
   const userModeMatch = tag.match(/^mode-(save|apply)_([0-4])$/);
   if (userModeMatch) {
     return Uint8Array.of(0xa5,
@@ -1497,7 +1546,8 @@ async function performTx(tag) {
     || packet[1] === DSP_CMD_GET_CONFIG
     || packet[1] === DSP_CMD_RESET_DEFAULTS
     || packet[1] === DSP_CMD_MODE_SAVE
-    || packet[1] === DSP_CMD_MODE_APPLY;
+    || packet[1] === DSP_CMD_MODE_APPLY
+    || packet[1] === DSP_CMD_SET_STARTUP_LEVELS;
   if (!repeatableCommand && lastTxSignature === signature) {
     setTxStatus('SKIPDUP', 'warn');
     return;
@@ -1510,7 +1560,7 @@ async function performTx(tag) {
     }
     lastTxSignature = signature;
     setTxStatus('TX OK', 'ok');
-    appendRxLog(`TX ${tag}`);
+    if (!tag.startsWith('startup-levels_')) appendRxLog(`TX ${tag}`);
   } catch (error) {
     setTxStatus('TX failed', 'bad');
     appendRxLog(`TX failed: ${error?.name || 'Error'}: ${error?.message || 'unknown error'}`);
@@ -2092,6 +2142,30 @@ if (btnModeSave) {
   });
 }
 setUserModeBusy(false);
+
+if (btnStartupLevelSave) {
+  btnStartupLevelSave.addEventListener('click', async () => {
+    const auxLevel = Number(startupAuxLevel?.value);
+    const micLevel = Number(startupMicLevel?.value);
+    if (!connected || ADC_VOLUME_MODE || startupLevelSaving ||
+        !Number.isInteger(auxLevel) || auxLevel < 0 || auxLevel > 5 ||
+        !Number.isInteger(micLevel) || micLevel < 0 || micLevel > 5) return;
+    startupLevelSaving = true;
+    setStartupLevelBusy(true);
+    setStartupLevelStatus('Đang lưu...', 'pending');
+    if (startupLevelAckTimer) clearTimeout(startupLevelAckTimer);
+    startupLevelAckTimer = setTimeout(() => {
+      startupLevelAckTimer = null;
+      startupLevelSaving = false;
+      setStartupLevelBusy(false);
+      setStartupLevelStatus('Không nhận được xác nhận', 'bad');
+    }, 5000);
+    await sendTx(`startup-levels_${auxLevel}_${micLevel}`);
+  });
+}
+[startupAuxLevel, startupMicLevel].forEach((select) => {
+  select?.addEventListener('change', () => setStartupLevelStatus('Chưa lưu', 'pending'));
+});
 
 if (btnSave) {
   btnSave.addEventListener('click', async () => {

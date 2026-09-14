@@ -4035,6 +4035,22 @@ input[type="number"],
   color: #0f6b59;
   background: #e8f7f2;
 }
+.startup-level-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.startup-level-card > button {
+  width: 100%;
+  min-height: 38px;
+}
+.startup-level-card.is-hardware-owned {
+  background: #f5f8f9;
+}
+.startup-level-card.is-hardware-owned select,
+.startup-level-card.is-hardware-owned button {
+  opacity: .52;
+}
 .power-status-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -4077,4 +4093,5 @@ input[type="number"],
   .user-mode-row { border-right: 0; }
   .power-status-grid { grid-template-columns: 1fr; }
   .user-mode-actions { grid-template-columns: 1fr; }
+  .startup-level-grid { grid-template-columns: 1fr; }
 }

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'dsp-interface-pot-v43-mode-power-mobile-20260914';
+const CACHE_NAME = 'dsp-interface-pot-v44-startup-levels-20260914';
 const ASSETS = [
   './',
   './index.html',
