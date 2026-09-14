@@ -441,6 +441,36 @@
             <p class="system-note">Mặc định không theo dõi để đường micro luôn mở. Chỉ chọn mức thấp hoặc mức cao sau khi đã đo đúng logic KC của bo micro.</p>
           </div>
 
+          <div class="card system-control-card user-mode-card">
+            <div class="system-card-heading">
+              <h3>Bộ nhớ chế độ</h3>
+              <span id="user-mode-status" class="user-mode-status" role="status">Chưa chọn mode</span>
+            </div>
+            <label>Chọn cấu hình
+              <select id="user-mode-select">
+                <option value="0">Mode 1</option>
+                <option value="1">Mode 2</option>
+                <option value="2">Mode 3</option>
+                <option value="3">Mode 4</option>
+                <option value="4">Mode 5</option>
+              </select>
+            </label>
+            <div class="user-mode-actions">
+              <button id="btn-mode-apply" type="button" disabled>Áp dụng</button>
+              <button id="btn-mode-save" type="button" disabled>Lưu cấu hình hiện tại</button>
+            </div>
+            <p class="system-note">Mode lưu EQ nhạc. Âm lượng nhạc, mic và hiệu ứng vẫn luôn theo ba biến trở trên thiết bị.</p>
+          </div>
+
+          <div class="card system-control-card power-status-card">
+            <h3>Nguồn thiết bị</h3>
+            <dl class="power-status-grid">
+              <div><dt>Điện áp hiện tại</dt><dd id="power-voltage">--.-- V</dd></div>
+              <div><dt>Trạng thái</dt><dd id="power-state">Chưa có dữ liệu</dd></div>
+            </dl>
+          </div>
+
+
           <div class="card system-control-card reset-card">
             <h3>Khôi phục mặc định</h3>
             <p class="system-note">Đưa toàn bộ thông số DSP và chế độ KC về cấu hình gốc. Tên Bluetooth và BLE được giữ nguyên.</p>

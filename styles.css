@@ -3765,19 +3765,22 @@ body.connection-gate-active .connect-gate {
 }
 .connect-gate-card {
   width: min(100%, 520px);
+  max-width: calc(100vw - 36px);
+  min-width: 0;
   padding: clamp(28px, 6vw, 52px) clamp(22px, 6vw, 58px);
   text-align: center;
   border: 1px solid var(--line);
   border-radius: 24px;
   background: var(--surface);
   box-shadow: var(--shadow-card);
+  overflow: hidden;
 }
 .connect-gate-logo { display: block; margin: 0 auto 16px; border-radius: 18px; }
 .connect-gate-kicker { margin: 0 0 8px; color: var(--muted); font-size: 11px; font-weight: 750; letter-spacing: .16em; }
 .connect-gate-card h1 { margin: 0; color: var(--text); font-size: clamp(26px, 5vw, 36px); }
 .connect-gate-description { margin: 12px auto 24px; max-width: 360px; color: var(--muted); line-height: 1.5; }
-.connect-gate-button { min-width: 190px; min-height: 46px; font-size: 16px; font-weight: 750; }
-.connect-gate-card .ble-link-state { margin: 18px 0 0; }
+.connect-gate-button { width: min(100%, 400px); min-width: 0; min-height: 46px; font-size: 16px; font-weight: 750; }
+.connect-gate-card .ble-link-state { margin: 18px 0 0; overflow-wrap: anywhere; }
 .connect-gate-hint { margin: 18px 0 0; color: var(--muted); font-size: 12px; }
 .topbar-connection { margin-left: auto; display: flex; align-items: center; gap: 9px; }
 .topbar-ble-state { color: var(--muted); font-size: 12px; font-weight: 700; }
@@ -3976,5 +3979,102 @@ input[type="number"],
   }
   .dyn-fader,
   .dyn-card-eq .dyn-fader,
-  .mic-fx-card .dyn-fader { background: transparent; }
+.mic-fx-card .dyn-fader { background: transparent; }
+}
+
+/* MCU user modes and slow power telemetry (BLE protocol 0x0f/0x10/0x85). */
+.system-card-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+.system-card-heading h3 { margin-bottom: 0; }
+.user-mode-status {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: right;
+}
+.user-mode-status[data-state="ok"] { color: #16866f; }
+.user-mode-status[data-state="bad"] { color: #b42318; }
+.user-mode-status[data-state="pending"] { color: #8a5a00; }
+.user-mode-list {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.user-mode-row {
+  min-width: 0;
+  padding: 12px;
+  border-right: 1px solid var(--line);
+}
+.user-mode-row:last-child { border-right: 0; }
+.user-mode-row strong {
+  display: block;
+  margin-bottom: 9px;
+  color: var(--text);
+  font-size: 13px;
+}
+.user-mode-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 12px;
+}
+.user-mode-actions button {
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 8px;
+  font-size: 11px;
+}
+.user-mode-actions button.is-active {
+  border-color: #16866f;
+  color: #0f6b59;
+  background: #e8f7f2;
+}
+.power-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--line);
+}
+.power-status-grid > div {
+  min-width: 0;
+  padding: 11px 12px;
+  background: var(--surface);
+}
+.power-status-grid dt {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.power-status-grid dd {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 750;
+}
+.power-status-grid dd[data-state="ok"] { color: #16866f; }
+.power-status-grid dd[data-state="bad"] { color: #b42318; }
+.power-status-grid dd[data-state="off"] { color: var(--muted); }
+
+@media (max-width: 900px) {
+  .user-mode-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .user-mode-row { border-bottom: 1px solid var(--line); }
+  .user-mode-row:nth-child(2n) { border-right: 0; }
+  .user-mode-row:last-child { border-bottom: 0; }
+}
+@media (max-width: 520px) {
+  .system-card-heading { align-items: flex-start; flex-direction: column; gap: 5px; }
+  .user-mode-status { text-align: left; }
+  .user-mode-list { grid-template-columns: 1fr; }
+  .user-mode-row { border-right: 0; }
+  .power-status-grid { grid-template-columns: 1fr; }
+  .user-mode-actions { grid-template-columns: 1fr; }
 }

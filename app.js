@@ -10,6 +10,12 @@ const btNameInput = document.getElementById('bt-name');
 const bleNameInput = document.getElementById('ble-name');
 const kcModeSelect = document.getElementById('kc-mode');
 const btnResetDefaults = document.getElementById('btn-reset-defaults');
+const userModeSelect = document.getElementById('user-mode-select');
+const btnModeSave = document.getElementById('btn-mode-save');
+const btnModeApply = document.getElementById('btn-mode-apply');
+const userModeStatus = document.getElementById('user-mode-status');
+const powerVoltage = document.getElementById('power-voltage');
+const powerState = document.getElementById('power-state');
 const chipDevice = document.getElementById('chip-device');
 const btnSidebarToggle = document.getElementById('btn-sidebar-toggle');
 const btnSidebarClose = document.getElementById('btn-sidebar-close');
@@ -38,6 +44,8 @@ const DSP_CMD_SET_BT_NAME = 0x0b;
 const DSP_CMD_SET_BLE_NAME = 0x0c;
 const DSP_CMD_SET_KC_MODE = 0x0d;
 const DSP_CMD_RESET_DEFAULTS = 0x0e;
+const DSP_CMD_MODE_SAVE = 0x0f;
+const DSP_CMD_MODE_APPLY = 0x10;
 /* Keep reset requests at least this far apart so the MCU can finish its
  * reset/ACK/config snapshot sequence even if the user taps repeatedly. */
 const RESET_MIN_INTERVAL_MS = 2000;
@@ -46,13 +54,14 @@ const DSP_DEVICE_NAME_MAX_BYTES = 17;
 const DSP_EVENT_CONFIG_BEGIN = 0x82;
 const DSP_EVENT_CONFIG_ITEM = 0x83;
 const DSP_EVENT_CONFIG_END = 0x84;
+const DSP_EVENT_POWER_STATUS = 0x85;
 
 /* Chế độ firmware dùng 3 biến trở A20/A21/A22 để điều khiển âm lượng.
  * Các slider tương ứng chỉ hiển thị giá trị MCU gửi về, không phát lệnh BLE. */
 const ADC_VOLUME_MODE = true;
 const ADC_OWNED_CONTROL_IDS = [
   'l-gain', 'r-gain', 'sub-gain', 'mic-output-gain',
-  'echo-level', 'rv-level',
+  'echo-mix', 'rv-mix',
 ];
 
 function applyHardwareVolumeOwnership() {
@@ -148,6 +157,9 @@ let configSyncRevision = 0;
 let saveAckTimer = null;
 let resetAckTimer = null;
 let resetLastRequestAt = 0;
+let modeAckTimer = null;
+let pendingUserMode = null;
+let activeUserModeSlot = null;
 const rxLogLines = [];
 let lastFriendlySystemStatus = '';
 const DB_MIN = -12;
@@ -345,9 +357,16 @@ function applyBleDisconnectedState(text = 'Chưa kết nối BLE Web') {
   saveAckTimer = null;
   if (resetAckTimer) clearTimeout(resetAckTimer);
   resetAckTimer = null;
+  if (modeAckTimer) clearTimeout(modeAckTimer);
+  modeAckTimer = null;
+  pendingUserMode = null;
   if (btnSave) btnSave.disabled = false;
   if (btnResetDefaults) btnResetDefaults.disabled = false;
   connected = false;
+  setUserModeBusy(false);
+  activeUserModeSlot = null;
+  setUserModeStatus('Chưa chọn mode');
+  resetPowerStatus();
   bleServer = null;
   bleTxCharacteristic = null;
   lastTxSignature = '';
@@ -414,6 +433,7 @@ async function establishBleConnection(device, reason) {
   traceBlePhase('CHARACTERISTICS_READY', `rx=${rxReady ? 1 : 0} tx=1`);
 
   connected = true;
+  setUserModeBusy(false);
   bleReconnectAttempt = 0;
   rememberBleDevice(device);
   setConnUI();
@@ -504,7 +524,7 @@ function handleBleDisconnected(event) {
     appendRxLog('Bỏ qua sự kiện BLE disconnect cũ (GATT đã nối lại)');
     return;
   }
-  traceBlePhase('DISCONNECTED', 'gatt_connected=0');
+  traceBlePhase('DISCONNECTED', `gatt_connected=0`);
   detachBleRxNotifications();
   detachBleTxCharacteristic();
   appendRxLog('BLE đã ngắt kết nối');
@@ -562,6 +582,8 @@ async function connectBleWeb() {
     }
     detachBleRxNotifications();
     detachBleTxCharacteristic();
+    // A BLE link may be up while GATT discovery/FF01-FF02 setup fails.
+    // Keep this distinct from a radio-level connection failure in the UI/log.
     if (gattStillConnected && !isCancelled) {
       applyBleDisconnectedState('BLE đã nối nhưng kênh DSP chưa sẵn sàng');
       setTxStatus('BLE link up / DSP channel lỗi', 'bad');
@@ -698,6 +720,13 @@ function decodeBleStatus(value, bytes) {
   const effects = [];
   const musicDsp = [];
 
+  if (ADC_VOLUME_MODE) {
+    setControlValueFromMcu('l-gain', bytes[10]);
+    setControlValueFromMcu('r-gain', bytes[11]);
+    setControlValueFromMcu('sub-gain', bytes[12]);
+    setControlValueFromMcu('mic-output-gain', bytes[13]);
+  }
+
   if (features & (1 << 1)) microphones.push('1');
   if (features & (1 << 2)) microphones.push('2');
   if (dsp & (1 << 0)) eq.push('L');
@@ -735,6 +764,87 @@ function setControlValueFromMcu(id, value) {
   if (Number.isFinite(max)) next = Math.min(max, next);
   control.value = String(next);
   if (control._valueEl) control._valueEl.textContent = formatRangeValue(control);
+}
+
+function setUserModeBusy(busy) {
+  const disabled = busy || !connected;
+  if (userModeSelect) userModeSelect.disabled = busy;
+  if (btnModeSave) btnModeSave.disabled = disabled;
+  if (btnModeApply) btnModeApply.disabled = disabled;
+}
+
+function setUserModeStatus(message, state = '') {
+  if (!userModeStatus) return;
+  userModeStatus.textContent = message;
+  userModeStatus.dataset.state = state;
+}
+
+function renderActiveUserMode() {
+  if (userModeSelect && Number.isInteger(activeUserModeSlot)) {
+    userModeSelect.value = String(activeUserModeSlot);
+  }
+}
+
+function handleUserModeAck(command, status) {
+  const pending = pendingUserMode;
+  if (!pending || pending.command !== command) {
+    console.debug('[MODE_ACK_IGNORED]', command);
+    return;
+  }
+  if (modeAckTimer) clearTimeout(modeAckTimer);
+  modeAckTimer = null;
+  pendingUserMode = null;
+  setUserModeBusy(false);
+
+  const slot = pending?.slot;
+  const modeNumber = Number.isInteger(slot) ? slot + 1 : '?';
+  if (status !== 0) {
+    const reason = status === 4 && command === DSP_CMD_MODE_APPLY
+      ? 'mode chưa được lưu'
+      : `mã lỗi ${status}`;
+    setUserModeStatus(`Không thể ${command === DSP_CMD_MODE_SAVE ? 'lưu' : 'áp dụng'} Mode ${modeNumber}: ${reason}`, 'bad');
+    setTxStatus(`mode lỗi ${status}`, 'bad');
+    return;
+  }
+
+  if (command === DSP_CMD_MODE_SAVE) {
+    setUserModeStatus(`Đã lưu cấu hình hiện tại vào Mode ${modeNumber}`, 'ok');
+    setTxStatus(`đã lưu Mode ${modeNumber}`, 'ok');
+    return;
+  }
+
+  activeUserModeSlot = slot;
+  renderActiveUserMode();
+  setUserModeStatus(`Đang dùng Mode ${modeNumber}`, 'ok');
+  setTxStatus(`đã áp dụng Mode ${modeNumber}`, 'ok');
+  window.setTimeout(() => { requestDspConfigFromChip().catch(() => {}); }, 120);
+}
+
+function applyPowerStatus(value, bytes) {
+  if (bytes.length !== 8 || bytes[2] !== 1) return false;
+  const view = new DataView(value.buffer, value.byteOffset, value.byteLength);
+  const millivolts = view.getUint16(3, true);
+  const raw = view.getUint16(5, true);
+  const flags = bytes[7];
+  if (powerVoltage) powerVoltage.textContent = `${(millivolts / 1000).toFixed(2)} V`;
+  if (powerState) {
+    const dropLatched = (flags & 2) !== 0;
+    const ampEnabled = (flags & 1) !== 0;
+    powerState.textContent = dropLatched
+      ? 'Đã kích hoạt bảo vệ sụt áp'
+      : (ampEnabled ? 'Nguồn ổn định' : 'Đầu ra công suất đang tắt');
+    powerState.dataset.state = dropLatched ? 'bad' : (ampEnabled ? 'ok' : 'off');
+  }
+  console.debug('[POWER_STATUS]', { millivolts, raw, flags });
+  return true;
+}
+
+function resetPowerStatus() {
+  if (powerVoltage) powerVoltage.textContent = '--.-- V';
+  if (powerState) {
+    powerState.textContent = 'Chưa có dữ liệu';
+    powerState.dataset.state = 'off';
+  }
 }
 
 function setToggleFromMcu(toggle, enabled) {
@@ -883,6 +993,9 @@ function handleBleRxNotification(event) {
           syncSubModeUI('mono');
           syncSubPhaseUI(0);
           if (kcModeSelect) kcModeSelect.value = '0';
+          activeUserModeSlot = null;
+          renderActiveUserMode();
+          setUserModeStatus('Chưa chọn mode');
           if (!ADC_VOLUME_MODE) {
             setControlValueFromMcu('l-gain', 40);
             setControlValueFromMcu('r-gain', 40);
@@ -890,6 +1003,8 @@ function handleBleRxNotification(event) {
           appendRxLog('RESET ACK; đang đọc lại toàn bộ cấu hình mặc định');
           window.setTimeout(() => { syncAfterResetDefaults().catch(() => {}); }, 250);
         }
+      } else if (command === DSP_CMD_MODE_SAVE || command === DSP_CMD_MODE_APPLY) {
+        handleUserModeAck(command, bytes[3]);
       } else {
         setTxStatus(ok ? 'đã xác nhận' : `xác nhận lỗi ${bytes[3]}`, ok ? 'ok' : 'bad');
       }
@@ -922,6 +1037,10 @@ function handleBleRxNotification(event) {
       setTxStatus(status === 0 ? 'đồng bộ MCU' : `sync lỗi ${status}`, status === 0 ? 'ok' : 'bad');
       finishDspConfigSync(status === 0,
         status === 0 ? 'Đã đồng bộ thông số với thiết bị' : `Thiết bị không đồng bộ được thông số (mã ${status})`);
+      return;
+    }
+    if (bytes[0] === 0xa5 && bytes[1] === DSP_EVENT_POWER_STATUS) {
+      applyPowerStatus(value, bytes);
       return;
     }
   }
@@ -1185,6 +1304,12 @@ function buildBlePacket(tag) {
   if (tag === 'save') return Uint8Array.of(0xa5, DSP_CMD_SAVE_CONFIG);
   if (tag === 'config-get') return Uint8Array.of(0xa5, DSP_CMD_GET_CONFIG);
   if (tag === 'reset-defaults') return Uint8Array.of(0xa5, DSP_CMD_RESET_DEFAULTS);
+  const userModeMatch = tag.match(/^mode-(save|apply)_([0-4])$/);
+  if (userModeMatch) {
+    return Uint8Array.of(0xa5,
+      userModeMatch[1] === 'save' ? DSP_CMD_MODE_SAVE : DSP_CMD_MODE_APPLY,
+      Number(userModeMatch[2]));
+  }
   const kcModeMatch = tag.match(/^kc-mode_([0-2])$/);
   if (kcModeMatch) {
     return Uint8Array.of(0xa5, DSP_CMD_SET_KC_MODE, Number(kcModeMatch[1]));
@@ -1370,7 +1495,9 @@ async function performTx(tag) {
   const signature = packetSignature(packet);
   const repeatableCommand = packet[1] === DSP_CMD_SAVE_CONFIG
     || packet[1] === DSP_CMD_GET_CONFIG
-    || packet[1] === DSP_CMD_RESET_DEFAULTS;
+    || packet[1] === DSP_CMD_RESET_DEFAULTS
+    || packet[1] === DSP_CMD_MODE_SAVE
+    || packet[1] === DSP_CMD_MODE_APPLY;
   if (!repeatableCommand && lastTxSignature === signature) {
     setTxStatus('SKIPDUP', 'warn');
     return;
@@ -1928,6 +2055,44 @@ function updatePreampRowFields(side, bandId) {
   if (gainInput) gainInput.value = String(band.gain.toFixed(1));
 }
 
+async function requestUserMode(action, slot) {
+  if (!connected || pendingUserMode || !Number.isInteger(slot) || slot < 0 || slot > 4) {
+    setTxStatus(connected ? 'đang chờ mode trước' : 'chưa kết nối', connected ? 'warn' : 'bad');
+    return;
+  }
+  if (action === 'save') {
+    const accepted = window.confirm(`Ghi đè cấu hình DSP hiện tại vào Mode ${slot + 1}?`);
+    if (!accepted) return;
+  }
+
+  const command = action === 'save' ? DSP_CMD_MODE_SAVE : DSP_CMD_MODE_APPLY;
+  pendingUserMode = { command, slot };
+  setUserModeBusy(true);
+  setUserModeStatus(`${action === 'save' ? 'Đang lưu' : 'Đang áp dụng'} Mode ${slot + 1}...`, 'pending');
+  setTxStatus('đang chờ xác nhận mode...', 'warn');
+  if (modeAckTimer) clearTimeout(modeAckTimer);
+  modeAckTimer = setTimeout(() => {
+    modeAckTimer = null;
+    pendingUserMode = null;
+    setUserModeBusy(false);
+    setUserModeStatus(`Không nhận được xác nhận cho Mode ${slot + 1}`, 'bad');
+    setTxStatus('mode timeout', 'bad');
+  }, 5000);
+  await sendTx(`mode-${action}_${slot}`);
+}
+
+if (btnModeApply) {
+  btnModeApply.addEventListener('click', () => {
+    requestUserMode('apply', Number(userModeSelect?.value));
+  });
+}
+if (btnModeSave) {
+  btnModeSave.addEventListener('click', () => {
+    requestUserMode('save', Number(userModeSelect?.value));
+  });
+}
+setUserModeBusy(false);
+
 if (btnSave) {
   btnSave.addEventListener('click', async () => {
     if (!connected || btnSave.disabled) return;
@@ -2240,6 +2405,7 @@ if (btNameInput) {
 }
 
 if (bleNameInput) {
+  // BLE branding is firmware-owned; keep the field visible but never transmit it.
   bleNameInput.readOnly = true;
   bleNameInput.value = 'SoundProgramming';
 }
