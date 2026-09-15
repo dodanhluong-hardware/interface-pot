@@ -233,6 +233,44 @@ function getPreampBands(side) {
   if (side === 'mic2') return preampBandsMic2;
   return preampBands;
 }
+
+function resetEqChartsToFirmwareDefaults() {
+  const defaults = {
+    l: {
+      frequencies: [63, 125, 250, 500, 1000, 2000, 4000, 8000, 12000],
+      types: ['LS', 'PK', 'PK', 'PK', 'PK', 'PK', 'PK', 'PK', 'HS'],
+    },
+    r: {
+      frequencies: [63, 125, 250, 500, 1000, 2000, 4000, 8000, 12000],
+      types: ['LS', 'PK', 'PK', 'PK', 'PK', 'PK', 'PK', 'PK', 'HS'],
+    },
+    sub: {
+      frequencies: [120, 35, 45, 55, 70, 85, 100, 120, 25],
+      types: ['LP', 'PK', 'PK', 'PK', 'PK', 'PK', 'PK', 'PK', 'HP'],
+    },
+    mic1: {
+      frequencies: [80, 160, 315, 630, 1000, 2000, 4000, 8000, 10000],
+      types: ['HP', 'PK', 'PK', 'PK', 'PK', 'PK', 'PK', 'PK', 'HS'],
+    },
+    mic2: {
+      frequencies: [80, 160, 315, 630, 1000, 2000, 4000, 8000, 10000],
+      types: ['HP', 'PK', 'PK', 'PK', 'PK', 'PK', 'PK', 'PK', 'HS'],
+    },
+  };
+
+  Object.entries(defaults).forEach(([side, config]) => {
+    getPreampBands(side).forEach((band, index) => {
+      band.active = true;
+      band.type = config.types[index];
+      band.fc = config.frequencies[index];
+      band.gain = 0;
+      band.q = 1;
+    });
+    syncBandChipUI(side);
+    renderPreampRows(side);
+    renderEqLine(side);
+  });
+}
 function getPreampTableBody(side) {
   if (side === 'r') return preampTableBodyR;
   if (side === 'sub') return preampTableBodySub;
@@ -1025,6 +1063,7 @@ function handleBleRxNotification(event) {
           // Một số trạng thái giao diện (preset chọn, chế độ SUB) không nằm
           // trong gói snapshot cấu hình; đưa chúng về mặc định ngay lập tức.
           if (eqPresetSel) eqPresetSel.value = 'eq1';
+          resetEqChartsToFirmwareDefaults();
           syncSubModeUI('mono');
           syncSubPhaseUI(0);
           if (kcModeSelect) kcModeSelect.value = '0';
