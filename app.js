@@ -1019,8 +1019,8 @@ function handleBleRxNotification(event) {
         resetAckTimer = null;
         if (btnResetDefaults) btnResetDefaults.disabled = false;
         setTxStatus(ok ? 'đã khôi phục mặc định' : `reset lỗi ${bytes[3]}`, ok ? 'ok' : 'bad');
-        // RESET chỉ trả ACK; đọc lại toàn bộ cấu hình để mọi slider, EQ,
-        // effect và toggle trên giao diện phản ánh đúng giá trị MCU vừa đặt.
+        // Sau ACK, nhận lại toàn bộ cấu hình để mọi slider, EQ, effect và
+        // toggle trên giao diện phản ánh đúng giá trị MCU vừa đặt.
         if (ok) {
           // Một số trạng thái giao diện (preset chọn, chế độ SUB) không nằm
           // trong gói snapshot cấu hình; đưa chúng về mặc định ngay lập tức.
@@ -1035,8 +1035,10 @@ function handleBleRxNotification(event) {
             setControlValueFromMcu('l-gain', 40);
             setControlValueFromMcu('r-gain', 40);
           }
-          appendRxLog('RESET ACK; đang đọc lại toàn bộ cấu hình mặc định');
-          window.setTimeout(() => { syncAfterResetDefaults().catch(() => {}); }, 250);
+          appendRxLog('Đã khôi phục mặc định; đang cập nhật lại giao diện');
+          // Firmware tự gửi một snapshot đầy đủ ngay sau ACK reset. Bắt đầu
+          // chờ ngay để không bỏ lỡ CONFIG_BEGIN và không tạo snapshot thứ hai.
+          syncAfterResetDefaults().catch(() => {});
         }
       } else if (command === DSP_CMD_MODE_SAVE || command === DSP_CMD_MODE_APPLY) {
         handleUserModeAck(command, bytes[3]);
@@ -1077,10 +1079,15 @@ function handleBleRxNotification(event) {
       const view = new DataView(value.buffer, value.byteOffset, value.byteLength);
       const status = bytes[2];
       const revision = view.getUint32(3, true);
-      renderMcuConfigOnInterface();
-      setTxStatus(status === 0 ? 'đồng bộ MCU' : `sync lỗi ${status}`, status === 0 ? 'ok' : 'bad');
-      finishDspConfigSync(status === 0,
-        status === 0 ? 'Đã đồng bộ thông số với thiết bị' : `Thiết bị không đồng bộ được thông số (mã ${status})`);
+      const complete = status === 0
+        && configSyncExpectedItems > 0
+        && configSyncReceivedItems === configSyncExpectedItems
+        && revision === configSyncRevision;
+      if (complete) renderMcuConfigOnInterface();
+      setTxStatus(complete ? 'đồng bộ MCU' : 'đồng bộ chưa đầy đủ', complete ? 'ok' : 'bad');
+      finishDspConfigSync(complete, complete
+        ? 'Đã đồng bộ thông số với thiết bị'
+        : `Dữ liệu đồng bộ chưa đầy đủ (${configSyncReceivedItems}/${configSyncExpectedItems})`);
       return;
     }
     if (bytes[0] === 0xa5 && bytes[1] === DSP_EVENT_POWER_STATUS) {
@@ -1459,28 +1466,39 @@ function syncDynamicEqThresholdLimits(changedControl = null) {
   refreshControlHints();
 }
 
-async function requestDspConfigFromChip() {
-  if (configSyncResolve) finishDspConfigSync(false, 'Restarting CONFIG synchronization');
+function prepareDspConfigSync(message = '') {
+  if (configSyncResolve) finishDspConfigSync(false, 'Đang bắt đầu lại quá trình đồng bộ');
   configSyncExpectedItems = 0;
   configSyncReceivedItems = 0;
   configSyncRevision = 0;
-  appendRxLog('Đang tải thông số thiết bị...');
+  if (message) appendRxLog(message);
 
   const completion = new Promise((resolve) => {
     configSyncResolve = resolve;
     configSyncTimer = setTimeout(() => {
-      finishDspConfigSync(false, 'CONFIG sync timeout; MCU values were not overwritten');
+      finishDspConfigSync(false, 'Quá thời gian chờ dữ liệu từ thiết bị');
     }, 7000);
   });
+  return completion;
+}
+
+async function requestDspConfigFromChip() {
+  const completion = prepareDspConfigSync('Đang tải thông số thiết bị...');
   await sendTx('config-get');
   return completion;
 }
 
 async function syncAfterResetDefaults() {
-  const synced = await requestDspConfigFromChip();
+  // Lệnh reset hiện tại tự xếp lịch snapshot sau ACK. Chỉ gửi CONFIG_GET nếu
+  // snapshot tự động bị thiếu hoặc không tới, tránh hai luồng 67 gói chồng nhau.
+  let synced = await prepareDspConfigSync();
   if (!synced) {
-    appendRxLog('Không đồng bộ được giao diện sau RESET; giữ nguyên giá trị hiện tại');
-    return;
+    appendRxLog('Đang thử tải lại thông số sau khi khôi phục');
+    synced = await requestDspConfigFromChip();
+    if (!synced) {
+      appendRxLog('Không cập nhật được giao diện sau khi khôi phục');
+      return;
+    }
   }
   // Bản OLED/EC11 không có biến trở âm lượng: mức nhạc an toàn sau reset là 40%.
   // Bản 3 pot bỏ qua vì giá trị thực do ADC phần cứng quyết định.

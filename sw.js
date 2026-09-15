@@ -1,4 +1,4 @@
-const CACHE_NAME = 'dsp-interface-pot-v44-startup-levels-20260914';
+const CACHE_NAME = 'dsp-interface-pot-v45-reset-eq-sync-20260915';
 const ASSETS = [
   './',
   './index.html',
