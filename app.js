@@ -972,8 +972,8 @@ function applyMcuConfigItem(value, bytes) {
   }
 
   if (command === DSP_CMD_SET_STARTUP_LEVELS && bytes.length === 5) {
-    const auxLevel = Math.min(5, bytes[3]);
-    const micLevel = Math.min(5, bytes[4]);
+    const auxLevel = Math.min(7, bytes[3]);
+    const micLevel = Math.min(7, bytes[4]);
     if (startupAuxLevel) startupAuxLevel.value = String(auxLevel);
     if (startupMicLevel) startupMicLevel.value = String(micLevel);
     setStartupLevelStatus('Đã đồng bộ', 'ok');
@@ -1394,7 +1394,7 @@ function buildBlePacket(tag) {
   if (tag === 'save') return Uint8Array.of(0xa5, DSP_CMD_SAVE_CONFIG);
   if (tag === 'config-get') return Uint8Array.of(0xa5, DSP_CMD_GET_CONFIG);
   if (tag === 'reset-defaults') return Uint8Array.of(0xa5, DSP_CMD_RESET_DEFAULTS);
-  const startupLevelsMatch = tag.match(/^startup-levels_([0-5])_([0-5])$/);
+  const startupLevelsMatch = tag.match(/^startup-levels_([0-7])_([0-7])$/);
   if (startupLevelsMatch) {
     return Uint8Array.of(0xa5, DSP_CMD_SET_STARTUP_LEVELS,
       Number(startupLevelsMatch[1]), Number(startupLevelsMatch[2]));
@@ -2205,8 +2205,8 @@ if (btnStartupLevelSave) {
     const auxLevel = Number(startupAuxLevel?.value);
     const micLevel = Number(startupMicLevel?.value);
     if (!connected || ADC_VOLUME_MODE || startupLevelSaving ||
-        !Number.isInteger(auxLevel) || auxLevel < 0 || auxLevel > 5 ||
-        !Number.isInteger(micLevel) || micLevel < 0 || micLevel > 5) return;
+        !Number.isInteger(auxLevel) || auxLevel < 0 || auxLevel > 7 ||
+        !Number.isInteger(micLevel) || micLevel < 0 || micLevel > 7) return;
     startupLevelSaving = true;
     setStartupLevelBusy(true);
     setStartupLevelStatus('Đang lưu...', 'pending');
