@@ -61,10 +61,13 @@ const DSP_EVENT_CONFIG_ITEM = 0x83;
 const DSP_EVENT_CONFIG_END = 0x84;
 const DSP_EVENT_POWER_STATUS = 0x85;
 const DSP_EVENT_READY = 0x86;
-const BLE_READY_FALLBACK_MS = 900;
+const DSP_EVENT_AUDIO_METER = 0x87;
+const BLE_READY_TIMEOUT_MS = 1800;
+const BLE_SETUP_RETRY_DELAYS_MS = [150, 350, 800];
 const CONFIG_SYNC_INACTIVITY_MS = 3000;
 const CONFIG_SYNC_OVERALL_MS = 18000;
 const CONFIG_SYNC_MAX_ATTEMPTS = 3;
+const CONFIG_SYNC_REQUIRED_ITEMS = 67;
 
 /* Chế độ firmware dùng 3 biến trở A20/A21/A22 để điều khiển âm lượng.
  * Các slider tương ứng chỉ hiển thị giá trị MCU gửi về, không phát lệnh BLE. */
@@ -156,6 +159,7 @@ let bleReconnectTimer = null;
 let bleReconnectAttempt = 0;
 let bleDisconnectWait = Promise.resolve();
 const bleServiceCache = new Map();
+let bleConnectionGeneration = 0;
 let firmwareReadySeen = false;
 let firmwareReadyResolve = null;
 let firmwareReadyTimer = null;
@@ -182,6 +186,7 @@ let startupLevelAckTimer = null;
 let startupLevelSaving = false;
 const rxLogLines = [];
 let lastFriendlySystemStatus = '';
+let lastAudioMeterOverload = '';
 const AUDIO_SIGNAL_CONFIRM_SAMPLES = 2;
 const AUDIO_SIGNAL_MISSING_CONFIRM_SAMPLES = 3;
 let audioSignalDiagnostics = createAudioSignalDiagnostics();
@@ -481,9 +486,8 @@ function waitForFirmwareReady() {
     firmwareReadyTimer = setTimeout(() => {
       firmwareReadyTimer = null;
       firmwareReadyResolve = null;
-      // Backward-compatible path for older firmware without READY event.
       resolve(false);
-    }, BLE_READY_FALLBACK_MS);
+    }, BLE_READY_TIMEOUT_MS);
   });
 }
 
@@ -512,23 +516,60 @@ async function restorePermittedBleDevice() {
 
 async function establishBleConnection(device, reason) {
   if (!device?.gatt) throw new Error('Selected device has no GATT server');
+  const connectionGeneration = ++bleConnectionGeneration;
+  connected = false;
   traceBlePhase('GATT_CONNECT_START', `reason=${reason}`);
   attachBleDevice(device);
-  bleServer = device.gatt.connected ? device.gatt : await device.gatt.connect();
-  bleServiceCache.clear();
-  firmwareReadySeen = false;
-  traceBlePhase('GATT_CONNECTED', `name=${device.name || 'unknown'}`);
+  let setupReady = false;
+  let setupError = null;
 
-  // Give Android/Chrome and the chip a short interval before service discovery.
-  await new Promise((resolve) => setTimeout(resolve, 60));
-  traceBlePhase('SERVICE_DISCOVERY_START');
-  const rxReady = await bindBleRxNotifications();
-  if (!rxReady) appendRxLog('RX notify unavailable; see the GATT error above');
-  const txReady = await bindBleTxCharacteristic();
-  if (!txReady) throw new Error('TX write characteristic not found');
-  traceBlePhase('CHARACTERISTICS_READY', `rx=${rxReady ? 1 : 0} tx=1`);
-  await waitForFirmwareReady();
+  for (let attempt = 0; attempt < BLE_SETUP_RETRY_DELAYS_MS.length; attempt += 1) {
+    if (connectionGeneration !== bleConnectionGeneration || bleManualDisconnect) {
+      throw new Error('Quá trình kết nối đã bị hủy');
+    }
+    try {
+      bleServer = device.gatt.connected ? device.gatt : await device.gatt.connect();
+      if (connectionGeneration !== bleConnectionGeneration) {
+        throw new Error('Phiên kết nối đã thay đổi');
+      }
+      traceBlePhase('GATT_CONNECTED', `name=${device.name || 'unknown'} setup=${attempt + 1}`);
+      bleServiceCache.clear();
+      firmwareReadySeen = false;
+      finishFirmwareReadyWait(false);
+      await new Promise((resolve) => setTimeout(resolve, BLE_SETUP_RETRY_DELAYS_MS[attempt]));
+      traceBlePhase('SERVICE_DISCOVERY_START', `attempt=${attempt + 1}`);
+      await bindBleProductChannel();
+      const firmwareReady = await waitForFirmwareReady();
+      if (!firmwareReady) throw new Error('Thiết bị chưa xác nhận kênh dữ liệu');
+      setupReady = true;
+      break;
+    } catch (error) {
+      setupError = error;
+      finishFirmwareReadyWait(false);
+      firmwareReadySeen = false;
+      detachBleRxNotifications();
+      detachBleTxCharacteristic();
+      bleServiceCache.clear();
+      traceBlePhase('CHANNEL_SETUP_RETRY',
+        `attempt=${attempt + 1} name=${error?.name || 'Error'}`);
+      if (attempt + 1 < BLE_SETUP_RETRY_DELAYS_MS.length) {
+        appendRxLog('Thiết bị chưa phản hồi đầy đủ, đang tự thử lại kết nối');
+      }
+    }
+  }
 
+  if (!setupReady) {
+    throw setupError || new Error('Không khởi tạo được kênh điều khiển');
+  }
+  traceBlePhase('CHARACTERISTICS_READY', 'rx=1 tx=1 ready=1');
+  traceBlePhase('CONFIG_SYNC_START');
+  const configSyncOk = await requestDspConfigFromChip();
+  if (connectionGeneration !== bleConnectionGeneration || !device.gatt.connected) {
+    throw new Error('BLE link dropped during DSP configuration read');
+  }
+  if (!configSyncOk) {
+    throw new Error('Không nhận đủ thông số từ thiết bị');
+  }
   connected = true;
   setUserModeBusy(false);
   bleReconnectAttempt = 0;
@@ -538,22 +579,8 @@ async function establishBleConnection(device, reason) {
   const name = device.name || bleNameInput?.value || 'Unknown';
   setBleLinkState(`Đã kết nối BLE: ${name}`, 'ok');
   setTxStatus('link up', 'ok');
-  appendRxLog(`BLE ${reason}: ${name}`);
-  traceBlePhase('CONFIG_SYNC_START');
-  const configSyncOk = await requestDspConfigFromChip();
-  if (!device.gatt.connected || !connected) {
-    throw new Error('BLE link dropped during DSP configuration read');
-  }
-  if (!configSyncOk) {
-    // GATT link is valid even when optional CONFIG notifications are delayed
-    // or unavailable. Keep the link usable and expose the degraded condition.
-    setBleLinkState(`Đã kết nối BLE: ${name} (chưa đồng bộ cấu hình)`, 'ok');
-    setTxStatus('link up (config sync pending)', 'warn');
-    appendRxLog('BLE link vẫn hoạt động; CONFIG sync chưa hoàn tất');
-    traceBlePhase('READY_DEGRADED', 'config_sync=0');
-  } else {
-    traceBlePhase('READY', 'config_sync=1');
-  }
+  appendRxLog(`Đã kết nối và tải xong thông số: ${name}`);
+  traceBlePhase('READY', 'config_sync=1');
   showDspScreen();
 }
 
@@ -591,11 +618,16 @@ async function reconnectKnownBleDevice(reason = 'reconnected') {
     await establishBleConnection(bleDevice, reason);
     success = true;
   } catch (error) {
+    if (bleDevice?.gatt?.connected) {
+      bleDevice.removeEventListener('gattserverdisconnected', handleBleDisconnected);
+      try { bleDevice.gatt.disconnect(); } catch (_) { /* already down */ }
+    }
     detachBleRxNotifications();
     detachBleTxCharacteristic();
     applyBleDisconnectedState('Kết nối lại BLE chưa thành công');
     bleReconnectAttempt += 1;
-    appendRxLog(`Kết nối lại BLE thất bại: ${error?.name || 'Lỗi'}: ${error?.message || 'không rõ lỗi'}`);
+    console.warn('BLE reconnect failed', error);
+    appendRxLog('Chưa thể kết nối lại với thiết bị; ứng dụng sẽ tự thử lại');
     traceBlePhase('RETRY_FAIL', `name=${error?.name || 'Error'}`);
   } finally {
     bleConnecting = false;
@@ -621,6 +653,7 @@ function handleBleDisconnected(event) {
     appendRxLog('Bỏ qua sự kiện BLE disconnect cũ (GATT đã nối lại)');
     return;
   }
+  bleConnectionGeneration += 1;
   traceBlePhase('DISCONNECTED', `gatt_connected=0`);
   detachBleRxNotifications();
   detachBleTxCharacteristic();
@@ -652,11 +685,8 @@ async function connectBleWeb() {
   let connectStage = 'REQUEST_DEVICE';
   try {
     const optionalServices = [
-      'battery_service',
-      '6e400001-b5a3-f393-e0a9-e50e24dcca9e',
-      '0000ffe0-0000-1000-8000-00805f9b34fb',
-      '0000ab00-0000-1000-8000-00805f9b34fb',
       '0000ff00-0000-1000-8000-00805f9b34fb',
+      '0000ab00-0000-1000-8000-00805f9b34fb',
     ];
     selectedDevice = await navigator.bluetooth.requestDevice({
       // Chỉ quét thiết bị MCU có tên BLE cố định của sản phẩm.
@@ -670,11 +700,15 @@ async function connectBleWeb() {
     connectStage = 'GATT/SERVICE_SETUP';
     await establishBleConnection(selectedDevice, 'connected');
   } catch (error) {
+    bleConnectionGeneration += 1;
     const isCancelled = error?.name === 'NotFoundError';
     const gattStillConnected = !!selectedDevice?.gatt?.connected;
-    if (gattStillConnected) {
+    clearBleReconnectTimer();
+    if (selectedDevice) {
       selectedDevice.removeEventListener('gattserverdisconnected', handleBleDisconnected);
       if (bleDevice === selectedDevice) bleDevice = null;
+    }
+    if (gattStillConnected) {
       try { selectedDevice.gatt.disconnect(); } catch (_) { /* already down */ }
     }
     detachBleRxNotifications();
@@ -684,14 +718,17 @@ async function connectBleWeb() {
     if (gattStillConnected && !isCancelled) {
       applyBleDisconnectedState('BLE đã nối nhưng kênh DSP chưa sẵn sàng');
       setTxStatus('BLE link up / DSP channel lỗi', 'bad');
-      appendRxLog(`BLE link đã lên nhưng khởi tạo GATT thất bại tại ${connectStage}: ${error?.name || 'Lỗi'}: ${error?.message || 'không rõ lỗi'}`);
+      appendRxLog('Thiết bị chưa gửi đủ dữ liệu. Hãy giữ thiết bị ở gần rồi kết nối lại.');
       traceBlePhase('LINK_UP_INIT_FAIL', `stage=${connectStage} name=${error?.name || 'Error'}`);
     } else {
       applyBleDisconnectedState(isCancelled ? 'Bạn chưa chọn thiết bị BLE' : 'Kết nối BLE thất bại');
       setTxStatus(isCancelled ? 'cancel connect' : 'connect fail', isCancelled ? 'warn' : 'bad');
-      appendRxLog(`Kết nối BLE thất bại tại ${connectStage}: ${error?.name || 'Lỗi'}: ${error?.message || 'không rõ lỗi'}`);
+      if (!isCancelled) {
+        appendRxLog('Chưa kết nối được thiết bị. Hãy kiểm tra nguồn, khoảng cách rồi thử lại.');
+      }
       traceBlePhase('FAIL', `stage=${connectStage} name=${error?.name || 'Error'}`);
     }
+    console.warn('BLE connect failed', { connectStage, error });
   } finally {
     bleConnecting = false;
     setBleToggleUI();
@@ -700,6 +737,7 @@ async function connectBleWeb() {
 
 function disconnectBleWeb() {
   bleManualDisconnect = true;
+  bleConnectionGeneration += 1;
   clearBleReconnectTimer();
   localStorage.removeItem(BLE_AUTO_RECONNECT_KEY);
   localStorage.removeItem(BLE_DEVICE_ID_KEY);
@@ -861,6 +899,64 @@ function createAudioSignalDiagnostics() {
 
 function resetAudioSignalDiagnostics() {
   audioSignalDiagnostics = createAudioSignalDiagnostics();
+  lastAudioMeterOverload = '';
+}
+
+function audioMeterDbfs(rms) {
+  if (!rms) return null;
+  return 20 * Math.log10(rms / 32768);
+}
+
+function audioMeterLabel(rms) {
+  if (rms < 80) return 'không có tín hiệu';
+  if (rms < 600) return 'yếu';
+  if (rms < 12000) return 'tốt';
+  return 'lớn';
+}
+
+function formatAudioMeterChannel(name, rms, valid) {
+  if (!valid) return `${name} chưa sẵn sàng`;
+  const dbfs = audioMeterDbfs(rms);
+  if (dbfs == null) return `${name} không có tín hiệu`;
+  return `${name} ${dbfs.toFixed(1)} dBFS (${audioMeterLabel(rms)})`;
+}
+
+function handleAudioMeter(value, bytes) {
+  if (bytes.length !== 20 || bytes[2] !== 1) return false;
+  const view = new DataView(value.buffer, value.byteOffset, value.byteLength);
+  const flags = bytes[3];
+  const auxValid = Boolean(flags & (1 << 0));
+  const micValid = Boolean(flags & (1 << 1));
+  const rms = [
+    view.getUint16(4, true),
+    view.getUint16(6, true),
+    view.getUint16(8, true),
+    view.getUint16(10, true),
+  ];
+  const peaks = [
+    view.getUint16(12, true),
+    view.getUint16(14, true),
+    view.getUint16(16, true),
+    view.getUint16(18, true),
+  ];
+
+  appendRxLog([
+    'Mức tín hiệu đầu vào:',
+    formatAudioMeterChannel('AUX trái', rms[0], auxValid),
+    formatAudioMeterChannel('AUX phải', rms[1], auxValid),
+    formatAudioMeterChannel('Mic 1', rms[2], micValid),
+    formatAudioMeterChannel('Mic 2', rms[3], micValid),
+  ].join(' · '));
+
+  const names = ['AUX trái', 'AUX phải', 'Mic 1', 'Mic 2'];
+  const overloaded = names.filter((_, index) =>
+    peaks[index] >= 32000 && (index < 2 ? auxValid : micValid));
+  const overloadKey = overloaded.join('|');
+  if (overloadKey && overloadKey !== lastAudioMeterOverload) {
+    appendRxLog(`${overloaded.join(' và ')} đang nhận tín hiệu quá lớn; hãy giảm mức phát để tránh rè.`);
+  }
+  lastAudioMeterOverload = overloadKey;
+  return true;
 }
 
 function decodeAudioSignalStatus(bytes, features) {
@@ -1368,8 +1464,8 @@ function handleBleRxNotification(event) {
       const status = bytes[2];
       const revision = view.getUint32(3, true);
       const complete = status === 0
-        && configSyncExpectedItems > 0
-        && configSyncItemKeys.size === configSyncExpectedItems
+        && configSyncExpectedItems === CONFIG_SYNC_REQUIRED_ITEMS
+        && configSyncItemKeys.size === CONFIG_SYNC_REQUIRED_ITEMS
         && revision === configSyncRevision;
       touchConfigSyncProgress();
       if (complete) renderMcuConfigOnInterface();
@@ -1381,6 +1477,10 @@ function handleBleRxNotification(event) {
     }
     if (bytes[0] === 0xa5 && bytes[1] === DSP_EVENT_POWER_STATUS) {
       applyPowerStatus(value, bytes);
+      return;
+    }
+    if (bytes[0] === 0xa5 && bytes[1] === DSP_EVENT_AUDIO_METER) {
+      handleAudioMeter(value, bytes);
       return;
     }
   }
@@ -1412,111 +1512,57 @@ async function getBlePrimaryService(uuid) {
   return service;
 }
 
-async function bindBleRxNotifications() {
-  if (!bleServer) return false;
-  detachBleRxNotifications();
-  detachBleTxCharacteristic();
+async function bindBleProductChannel() {
+  if (!bleServer) throw new Error('BLE server unavailable');
 
-  const candidates = [
-    { service: '0000ff00-0000-1000-8000-00805f9b34fb', characteristic: '0000ff02-0000-1000-8000-00805f9b34fb' },
-    { service: '6e400001-b5a3-f393-e0a9-e50e24dcca9e', characteristic: '6e400003-b5a3-f393-e0a9-e50e24dcca9e' },
-    { service: '0000ffe0-0000-1000-8000-00805f9b34fb', characteristic: '0000ffe1-0000-1000-8000-00805f9b34fb' },
-    { service: '0000ab00-0000-1000-8000-00805f9b34fb', characteristic: '0000ab02-0000-1000-8000-00805f9b34fb' },
+  const previousRx = bleRxCharacteristic;
+  bleRxCharacteristic = null;
+  bleTxCharacteristic = null;
+  if (previousRx) {
+    previousRx.removeEventListener('characteristicvaluechanged', handleBleRxNotification);
+    try { await previousRx.stopNotifications(); } catch (_) { /* already stopped */ }
+  }
+
+  const profiles = [
+    {
+      service: '0000ff00-0000-1000-8000-00805f9b34fb',
+      tx: '0000ff01-0000-1000-8000-00805f9b34fb',
+      rx: '0000ff02-0000-1000-8000-00805f9b34fb',
+    },
+    {
+      service: '0000ab00-0000-1000-8000-00805f9b34fb',
+      tx: '0000ab01-0000-1000-8000-00805f9b34fb',
+      rx: '0000ab02-0000-1000-8000-00805f9b34fb',
+    },
   ];
+  let lastError = null;
 
-  for (const item of candidates) {
-    let characteristic = null;
+  for (const profile of profiles) {
+    let rx = null;
     try {
-      const service = await getBlePrimaryService(item.service);
-      characteristic = await service.getCharacteristic(item.characteristic);
-      appendRxLog(`RX characteristic found (${item.characteristic.slice(0, 8)}...), enabling notify`);
-      characteristic.addEventListener('characteristicvaluechanged', handleBleRxNotification);
-      await characteristic.startNotifications();
-      bleRxCharacteristic = characteristic;
-      traceBlePhase('RX_NOTIFY_READY', `uuid=${item.characteristic.slice(0, 8)}`);
-      appendRxLog(`RX notify ready (${item.characteristic.slice(0, 8)}...)`);
+      const service = await getBlePrimaryService(profile.service);
+      const [tx, rxCandidate] = await Promise.all([
+        service.getCharacteristic(profile.tx),
+        service.getCharacteristic(profile.rx),
+      ]);
+      rx = rxCandidate;
+      rx.addEventListener('characteristicvaluechanged', handleBleRxNotification);
+      await rx.startNotifications();
+      bleTxCharacteristic = tx;
+      bleRxCharacteristic = rx;
+      traceBlePhase('DATA_CHANNEL_READY', `service=${profile.service.slice(4, 8)}`);
       return true;
     } catch (error) {
-      traceBlePhase('RX_NOTIFY_FAIL', `uuid=${item.characteristic.slice(0, 8)} err=${error?.name || 'Error'}`);
-      appendRxLog(`RX candidate ${item.characteristic.slice(0, 8)} lỗi: ${error?.name || 'Error'}: ${error?.message || 'unknown error'}`);
-      if (characteristic) {
-        characteristic.removeEventListener('characteristicvaluechanged', handleBleRxNotification);
-        appendRxLog(`RX startNotifications failed: ${error?.name || 'Error'}: ${error?.message || 'unknown'}`);
+      lastError = error;
+      traceBlePhase('DATA_CHANNEL_FAIL',
+        `service=${profile.service.slice(4, 8)} name=${error?.name || 'Error'}`);
+      if (rx) {
+        rx.removeEventListener('characteristicvaluechanged', handleBleRxNotification);
+        try { await rx.stopNotifications(); } catch (_) { /* already stopped */ }
       }
-      // Try next known service/characteristic pair.
     }
   }
-  // Fallback for stacks that expose the vendor UUID in a different textual
-  // form (16-bit vs 128-bit) or reorder the primary-service table.
-  try {
-    const services = await bleServer.getPrimaryServices();
-    for (const service of services) {
-      const characteristics = await service.getCharacteristics();
-      const serviceUuid = String(service.uuid || '').toLowerCase();
-      if (!(serviceUuid.includes('ff00') || serviceUuid.includes('ab00'))) continue;
-      bleServiceCache.set(serviceUuid, service);
-      const characteristic = characteristics.find((candidate) => {
-        const uuid = String(candidate.uuid || '').toLowerCase();
-        return (uuid.includes('ff02') || uuid.includes('ab02'))
-          && (candidate.properties?.notify || candidate.properties?.indicate);
-      });
-      if (!characteristic) continue;
-      appendRxLog(`RX fallback characteristic ${characteristic.uuid}, enabling notify`);
-      characteristic.addEventListener('characteristicvaluechanged', handleBleRxNotification);
-      await characteristic.startNotifications();
-      bleRxCharacteristic = characteristic;
-      traceBlePhase('RX_NOTIFY_READY', `uuid=${characteristic.uuid}`);
-      appendRxLog(`RX fallback notify ready (${characteristic.uuid})`);
-      return true;
-    }
-  } catch (error) {
-    appendRxLog(`RX service enumeration lỗi: ${error?.name || 'Error'}: ${error?.message || 'unknown error'}`);
-  }
-  return false;
-}
-
-async function bindBleTxCharacteristic() {
-  if (!bleServer) return false;
-  detachBleTxCharacteristic();
-  const candidates = [
-    { service: '0000ff00-0000-1000-8000-00805f9b34fb', characteristic: '0000ff01-0000-1000-8000-00805f9b34fb' },
-    { service: '0000ab00-0000-1000-8000-00805f9b34fb', characteristic: '0000ab01-0000-1000-8000-00805f9b34fb' },
-  ];
-  for (const item of candidates) {
-    try {
-      const service = await getBlePrimaryService(item.service);
-      bleTxCharacteristic = await service.getCharacteristic(item.characteristic);
-      traceBlePhase('TX_WRITE_READY', `uuid=${item.characteristic.slice(0, 8)}`);
-      appendRxLog(`TX write ready (${item.characteristic.slice(0, 8)}...)`);
-      return true;
-    } catch (error) {
-      traceBlePhase('TX_WRITE_FAIL', `uuid=${item.characteristic.slice(0, 8)} err=${error?.name || 'Error'}`);
-      appendRxLog(`TX candidate ${item.characteristic.slice(0, 8)} lỗi: ${error?.name || 'Error'}: ${error?.message || 'unknown error'}`);
-      // Try the next supported DSP service.
-    }
-  }
-  try {
-    const services = await bleServer.getPrimaryServices();
-    for (const service of services) {
-      const characteristics = await service.getCharacteristics();
-      const serviceUuid = String(service.uuid || '').toLowerCase();
-      if (!(serviceUuid.includes('ff00') || serviceUuid.includes('ab00'))) continue;
-      bleServiceCache.set(serviceUuid, service);
-      const characteristic = characteristics.find((candidate) => {
-        const uuid = String(candidate.uuid || '').toLowerCase();
-        return (uuid.includes('ff01') || uuid.includes('ab01'))
-          && (candidate.properties?.write || candidate.properties?.writeWithoutResponse);
-      });
-      if (!characteristic) continue;
-      bleTxCharacteristic = characteristic;
-      traceBlePhase('TX_WRITE_READY', `uuid=${characteristic.uuid}`);
-      appendRxLog(`TX fallback write ready (${characteristic.uuid})`);
-      return true;
-    }
-  } catch (error) {
-    appendRxLog(`TX service enumeration lỗi: ${error?.name || 'Error'}: ${error?.message || 'unknown error'}`);
-  }
-  return false;
+  throw lastError || new Error('Không tìm thấy kênh điều khiển của thiết bị');
 }
 
 function buildEqPacket(side, bandId) {
@@ -1796,7 +1842,7 @@ async function requestDspConfigFromChip() {
     }
     const synced = await completion;
     if (synced) return true;
-    if (!connected || !bleDevice?.gatt?.connected) return false;
+    if (!bleDevice?.gatt?.connected || !bleRxCharacteristic || !bleTxCharacteristic) return false;
     if (attempt < CONFIG_SYNC_MAX_ATTEMPTS) {
       await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
     }
@@ -1859,7 +1905,11 @@ function appendBlePacketCrc(packet) {
 }
 
 async function performTx(tag) {
-  if (!connected) {
+  const bootstrapConfigRead = tag === 'config-get'
+    && bleDevice?.gatt?.connected
+    && bleRxCharacteristic
+    && bleTxCharacteristic;
+  if (!connected && !bootstrapConfigRead) {
     setTxStatus('blocked (not connected)', 'bad');
     return false;
   }
