@@ -3752,6 +3752,12 @@ input[type="range"]::-moz-range-thumb { width: 13px; height: 13px; border: 3px s
 
 /* Connection gate: the DSP workspace is inaccessible until BLE is ready. */
 .connect-gate { display: none; }
+
+body.ble-config-syncing .layout {
+  pointer-events: none;
+  opacity: 0.72;
+  transition: opacity 140ms ease;
+}
 body.connection-gate-active { padding-bottom: 0; }
 body.connection-gate-active .topbar,
 body.connection-gate-active .layout { display: none !important; }

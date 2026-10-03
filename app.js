@@ -60,6 +60,11 @@ const DSP_EVENT_CONFIG_BEGIN = 0x82;
 const DSP_EVENT_CONFIG_ITEM = 0x83;
 const DSP_EVENT_CONFIG_END = 0x84;
 const DSP_EVENT_POWER_STATUS = 0x85;
+const DSP_EVENT_READY = 0x86;
+const BLE_READY_FALLBACK_MS = 900;
+const CONFIG_SYNC_INACTIVITY_MS = 3000;
+const CONFIG_SYNC_OVERALL_MS = 18000;
+const CONFIG_SYNC_MAX_ATTEMPTS = 3;
 
 /* Chế độ firmware dùng 3 biến trở A20/A21/A22 để điều khiển âm lượng.
  * Các slider tương ứng chỉ hiển thị giá trị MCU gửi về, không phát lệnh BLE. */
@@ -135,7 +140,9 @@ let connected = false;
 let bleTraceSession = 0;
 let bleTracePhase = 'idle';
 let lastTxSignature = '';
-let txQueue = Promise.resolve();
+const txQueue = [];
+const txScheduleTimers = new Map();
+let txWorkerRunning = false;
 let lastPacketError = '';
 let deferredInstallPrompt = null;
 let pwaBarClosedByUser = localStorage.getItem(PWA_BAR_CLOSED_KEY) === '1';
@@ -148,6 +155,10 @@ let bleManualDisconnect = false;
 let bleReconnectTimer = null;
 let bleReconnectAttempt = 0;
 let bleDisconnectWait = Promise.resolve();
+const bleServiceCache = new Map();
+let firmwareReadySeen = false;
+let firmwareReadyResolve = null;
+let firmwareReadyTimer = null;
 
 function traceBlePhase(phase, detail = '') {
   bleTracePhase = phase;
@@ -156,9 +167,11 @@ function traceBlePhase(phase, detail = '') {
 }
 let configSyncResolve = null;
 let configSyncTimer = null;
+let configSyncOverallTimer = null;
 let configSyncExpectedItems = 0;
 let configSyncReceivedItems = 0;
 let configSyncRevision = 0;
+let configSyncItemKeys = new Set();
 let saveAckTimer = null;
 let resetAckTimer = null;
 let resetLastRequestAt = 0;
@@ -169,6 +182,9 @@ let startupLevelAckTimer = null;
 let startupLevelSaving = false;
 const rxLogLines = [];
 let lastFriendlySystemStatus = '';
+const AUDIO_SIGNAL_CONFIRM_SAMPLES = 2;
+const AUDIO_SIGNAL_MISSING_CONFIRM_SAMPLES = 3;
+let audioSignalDiagnostics = createAudioSignalDiagnostics();
 const DB_MIN = -12;
 const DB_MAX = 12;
 const CHART_H = 30;
@@ -399,6 +415,7 @@ function setBleToggleUI() {
 
 function applyBleDisconnectedState(text = 'Chưa kết nối BLE Web') {
   if (configSyncResolve) finishDspConfigSync(false, 'CONFIG sync cancelled: BLE disconnected');
+  finishFirmwareReadyWait(false);
   if (saveAckTimer) clearTimeout(saveAckTimer);
   saveAckTimer = null;
   if (resetAckTimer) clearTimeout(resetAckTimer);
@@ -417,10 +434,12 @@ function applyBleDisconnectedState(text = 'Chưa kết nối BLE Web') {
   activeUserModeSlot = null;
   setUserModeStatus('Chưa chọn mode');
   resetPowerStatus();
+  resetAudioSignalDiagnostics();
   bleServer = null;
+  bleServiceCache.clear();
   bleTxCharacteristic = null;
   lastTxSignature = '';
-  txQueue = Promise.resolve();
+  clearTxPipeline();
   setConnUI();
   setBleToggleUI();
   setBleLinkState(text, 'bad');
@@ -441,6 +460,31 @@ function attachBleDevice(device) {
   bleDevice = device;
   bleDevice.removeEventListener('gattserverdisconnected', handleBleDisconnected);
   bleDevice.addEventListener('gattserverdisconnected', handleBleDisconnected);
+}
+
+function finishFirmwareReadyWait(ready) {
+  if (firmwareReadyTimer) {
+    clearTimeout(firmwareReadyTimer);
+    firmwareReadyTimer = null;
+  }
+  const resolve = firmwareReadyResolve;
+  firmwareReadyResolve = null;
+  if (ready) firmwareReadySeen = true;
+  if (resolve) resolve(ready);
+}
+
+function waitForFirmwareReady() {
+  if (firmwareReadySeen) return Promise.resolve(true);
+  finishFirmwareReadyWait(false);
+  return new Promise((resolve) => {
+    firmwareReadyResolve = resolve;
+    firmwareReadyTimer = setTimeout(() => {
+      firmwareReadyTimer = null;
+      firmwareReadyResolve = null;
+      // Backward-compatible path for older firmware without READY event.
+      resolve(false);
+    }, BLE_READY_FALLBACK_MS);
+  });
 }
 
 function rememberBleDevice(device) {
@@ -471,16 +515,19 @@ async function establishBleConnection(device, reason) {
   traceBlePhase('GATT_CONNECT_START', `reason=${reason}`);
   attachBleDevice(device);
   bleServer = device.gatt.connected ? device.gatt : await device.gatt.connect();
+  bleServiceCache.clear();
+  firmwareReadySeen = false;
   traceBlePhase('GATT_CONNECTED', `name=${device.name || 'unknown'}`);
 
   // Give Android/Chrome and the chip a short interval before service discovery.
-  await new Promise((resolve) => setTimeout(resolve, 120));
+  await new Promise((resolve) => setTimeout(resolve, 60));
   traceBlePhase('SERVICE_DISCOVERY_START');
   const rxReady = await bindBleRxNotifications();
   if (!rxReady) appendRxLog('RX notify unavailable; see the GATT error above');
   const txReady = await bindBleTxCharacteristic();
   if (!txReady) throw new Error('TX write characteristic not found');
   traceBlePhase('CHARACTERISTICS_READY', `rx=${rxReady ? 1 : 0} tx=1`);
+  await waitForFirmwareReady();
 
   connected = true;
   setUserModeBusy(false);
@@ -492,7 +539,6 @@ async function establishBleConnection(device, reason) {
   setBleLinkState(`Đã kết nối BLE: ${name}`, 'ok');
   setTxStatus('link up', 'ok');
   appendRxLog(`BLE ${reason}: ${name}`);
-  showDspScreen();
   traceBlePhase('CONFIG_SYNC_START');
   const configSyncOk = await requestDspConfigFromChip();
   if (!device.gatt.connected || !connected) {
@@ -508,6 +554,7 @@ async function establishBleConnection(device, reason) {
   } else {
     traceBlePhase('READY', 'config_sync=1');
   }
+  showDspScreen();
 }
 
 function scheduleBleReconnect(reason, immediate = false) {
@@ -736,6 +783,7 @@ function appendRxLog(message) {
 function clearRxLog() {
   rxLogLines.length = 0;
   lastFriendlySystemStatus = '';
+  resetAudioSignalDiagnostics();
   if (!rxLogBox) return;
   rxLogBox.textContent = '[đã xóa]';
 }
@@ -802,6 +850,162 @@ function appendFriendlySystemStatus(message) {
   if (!message || message === lastFriendlySystemStatus) return;
   lastFriendlySystemStatus = message;
   appendRxLog(`Trạng thái hệ thống: ${message}`);
+}
+
+function createAudioSignalDiagnostics() {
+  return {
+    aux: { candidate: '', count: 0, reported: '' },
+    mic: { candidate: '', count: 0, reported: '' },
+  };
+}
+
+function resetAudioSignalDiagnostics() {
+  audioSignalDiagnostics = createAudioSignalDiagnostics();
+}
+
+function decodeAudioSignalStatus(bytes, features) {
+  if (bytes.length !== 20 || (bytes[19] & 0xf0) !== 0xa0) return null;
+  const levels = Array.from(bytes.slice(15, 19));
+  if (levels.some((level) => level > 4)) return null;
+  return {
+    auxLeft: levels[0],
+    auxRight: levels[1],
+    mic1: levels[2],
+    mic2: levels[3],
+    auxValid: Boolean(bytes[19] & (1 << 0)),
+    micValid: Boolean(bytes[19] & (1 << 1)),
+    auxActive: Boolean(bytes[19] & (1 << 2)),
+    mic1Enabled: Boolean(features & (1 << 1)),
+    mic2Enabled: Boolean(features & (1 << 2)),
+  };
+}
+
+function settleAudioSignalDiagnostic(groupName, code, message, recoveryMessage = '') {
+  const state = audioSignalDiagnostics[groupName];
+  if (!state || !code) return;
+  if (state.candidate === code) {
+    state.count += 1;
+  } else {
+    state.candidate = code;
+    state.count = 1;
+  }
+
+  const confirmations = code === 'overload'
+    ? 1
+    : (code.startsWith('missing') ? AUDIO_SIGNAL_MISSING_CONFIRM_SAMPLES
+      : AUDIO_SIGNAL_CONFIRM_SAMPLES);
+  if (state.count < confirmations || state.reported === code) return;
+
+  const previousWasWarning = state.reported && state.reported !== 'normal';
+  state.reported = code;
+  if (code === 'normal' && !previousWasWarning) return;
+  appendRxLog(code === 'normal' && previousWasWarning && recoveryMessage
+    ? recoveryMessage
+    : message);
+}
+
+function classifyAuxSignal(signal) {
+  const left = signal.auxLeft;
+  const right = signal.auxRight;
+  if (left === 4 || right === 4) {
+    return {
+      code: 'overload',
+      message: 'Tín hiệu AUX quá lớn và có thể bị rè. Hãy giảm âm lượng trên thiết bị phát.',
+    };
+  }
+  if (left === 0 && right === 0) {
+    return {
+      code: 'missing',
+      message: 'Chưa phát hiện tín hiệu AUX. Nếu đang phát nhạc, hãy kiểm tra dây và âm lượng của thiết bị phát.',
+    };
+  }
+  if (left === 0) {
+    return {
+      code: 'missing-left',
+      message: 'AUX chỉ nhận được kênh phải. Hãy kiểm tra dây hoặc chân tín hiệu bên trái.',
+    };
+  }
+  if (right === 0) {
+    return {
+      code: 'missing-right',
+      message: 'AUX chỉ nhận được kênh trái. Hãy kiểm tra dây hoặc chân tín hiệu bên phải.',
+    };
+  }
+  if (left === 1 || right === 1) {
+    return {
+      code: 'weak',
+      message: 'Tín hiệu AUX đang yếu. Hãy tăng âm lượng trên thiết bị phát hoặc kiểm tra lại dây.',
+    };
+  }
+  return {
+    code: 'normal',
+    message: 'Tín hiệu AUX đang được nhận bình thường.',
+    recovery: 'Tín hiệu AUX đã trở lại bình thường.',
+  };
+}
+
+function classifyMicSignal(signal) {
+  const active = [];
+  if (signal.mic1Enabled) active.push({ number: 1, level: signal.mic1 });
+  if (signal.mic2Enabled) active.push({ number: 2, level: signal.mic2 });
+  if (!active.length) return null;
+
+  const overloaded = active.filter((mic) => mic.level === 4).map((mic) => mic.number);
+  if (overloaded.length) {
+    return {
+      code: 'overload',
+      message: `${overloaded.length > 1 ? 'Tín hiệu micro' : `Tín hiệu Micro ${overloaded[0]}`} quá lớn, có thể gây rè hoặc hú. Hãy giảm âm lượng trên bộ thu micro.`,
+    };
+  }
+
+  const missing = active.filter((mic) => mic.level === 0).map((mic) => mic.number);
+  if (missing.length === active.length) {
+    return {
+      code: 'missing',
+      message: 'Chưa phát hiện tiếng micro. Khi kiểm tra, hãy nói vào micro; nếu vẫn im lặng, hãy kiểm tra nguồn và dây tín hiệu.',
+    };
+  }
+  if (missing.length) {
+    const receiving = active.filter((mic) => mic.level > 0).map((mic) => mic.number);
+    return {
+      code: `missing-${missing.join('-')}`,
+      message: `Micro ${receiving.join(' và ')} đang có tín hiệu; chưa phát hiện tiếng từ Micro ${missing.join(' và ')}. Hãy kiểm tra khi đang nói thử.`,
+    };
+  }
+
+  const weak = active.filter((mic) => mic.level === 1).map((mic) => mic.number);
+  if (weak.length) {
+    return {
+      code: `weak-${weak.join('-')}`,
+      message: `${weak.length > 1 ? 'Tín hiệu micro' : `Tín hiệu Micro ${weak[0]}`} đang yếu. Hãy kiểm tra âm lượng trên bộ thu micro.`,
+    };
+  }
+  return {
+    code: 'normal',
+    message: 'Tín hiệu micro đang được nhận bình thường.',
+    recovery: 'Tín hiệu micro đã trở lại bình thường.',
+  };
+}
+
+function handleAudioSignalStatus(bytes, features) {
+  const signal = decodeAudioSignalStatus(bytes, features);
+  if (!signal) return;
+
+  if (signal.auxValid && signal.auxActive) {
+    const aux = classifyAuxSignal(signal);
+    settleAudioSignalDiagnostic('aux', aux.code, aux.message, aux.recovery);
+  } else {
+    audioSignalDiagnostics.aux.candidate = '';
+    audioSignalDiagnostics.aux.count = 0;
+  }
+
+  if (signal.micValid) {
+    const mic = classifyMicSignal(signal);
+    if (mic) settleAudioSignalDiagnostic('mic', mic.code, mic.message, mic.recovery);
+  } else {
+    audioSignalDiagnostics.mic.candidate = '';
+    audioSignalDiagnostics.mic.count = 0;
+  }
 }
 
 function setControlValueFromMcu(id, value) {
@@ -921,11 +1125,43 @@ function finishDspConfigSync(ok, message) {
     clearTimeout(configSyncTimer);
     configSyncTimer = null;
   }
+  if (configSyncOverallTimer) {
+    clearTimeout(configSyncOverallTimer);
+    configSyncOverallTimer = null;
+  }
   const resolve = configSyncResolve;
   configSyncResolve = null;
+  document.body.classList.remove('ble-config-syncing');
   if (message) appendRxLog(message);
   traceBlePhase(ok ? 'CONFIG_SYNC_DONE' : 'CONFIG_SYNC_FAIL', `ok=${ok ? 1 : 0}`);
   if (resolve) resolve(ok);
+}
+
+function armConfigSyncInactivityTimer() {
+  if (!configSyncResolve) return;
+  if (configSyncTimer) clearTimeout(configSyncTimer);
+  configSyncTimer = setTimeout(() => {
+    finishDspConfigSync(false, 'Thiết bị phản hồi chưa đầy đủ, đang thử lại');
+  }, CONFIG_SYNC_INACTIVITY_MS);
+}
+
+function touchConfigSyncProgress() {
+  armConfigSyncInactivityTimer();
+}
+
+function getConfigItemKey(bytes) {
+  if (bytes.length < 3) return '';
+  const command = bytes[2];
+  if (command === 0x01 && bytes.length === 5) return `volume:${bytes[3]}`;
+  if (command === 0x02 && bytes.length === 13) return `eq:${bytes[3]}:${bytes[4]}`;
+  if ((command === 0x03 || command === 0x04) && bytes.length === 6) {
+    return `effect:${command}:${bytes[3]}`;
+  }
+  if ([0x05, 0x06, 0x07, DSP_CMD_SET_SUB_PHASE, DSP_CMD_SET_BT_NAME,
+    DSP_CMD_SET_BLE_NAME, DSP_CMD_SET_KC_MODE, DSP_CMD_SET_STARTUP_LEVELS].includes(command)) {
+    return `single:${command}`;
+  }
+  return '';
 }
 
 function renderMcuConfigOnInterface() {
@@ -1042,9 +1278,14 @@ function applyMcuConfigItem(value, bytes) {
 
 function handleBleRxNotification(event) {
   const value = event?.target?.value;
-  if (value?.byteLength >= 4) {
+  if (value?.byteLength >= 2) {
     const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-    if (bytes[0] === 0xa5 && bytes[1] === 0x80) {
+    if (bytes[0] === 0xa5 && bytes[1] === DSP_EVENT_READY && bytes.length >= 3) {
+      finishFirmwareReadyWait(true);
+      traceBlePhase('MCU_READY', `protocol=${bytes[2]}`);
+      return;
+    }
+    if (bytes[0] === 0xa5 && bytes[1] === 0x80 && bytes.length >= 4) {
       const ok = bytes[3] === 0;
       const command = bytes[2];
       if (command === DSP_CMD_SAVE_CONFIG) {
@@ -1101,6 +1342,7 @@ function handleBleRxNotification(event) {
     if (bytes[0] === 0xa5 && bytes[1] === 0x81) {
       const status = decodeBleStatus(value, bytes);
       appendFriendlySystemStatus(status);
+      handleAudioSignalStatus(bytes, bytes[8]);
       return;
     }
     if (bytes[0] === 0xa5 && bytes[1] === DSP_EVENT_CONFIG_BEGIN && bytes.length === 8) {
@@ -1108,10 +1350,17 @@ function handleBleRxNotification(event) {
       configSyncExpectedItems = bytes[3];
       configSyncReceivedItems = 0;
       configSyncRevision = view.getUint32(4, true);
+      configSyncItemKeys = new Set();
+      touchConfigSyncProgress();
       return;
     }
     if (bytes[0] === 0xa5 && bytes[1] === DSP_EVENT_CONFIG_ITEM) {
-      if (applyMcuConfigItem(value, bytes)) configSyncReceivedItems += 1;
+      const itemKey = getConfigItemKey(bytes);
+      if (applyMcuConfigItem(value, bytes) && itemKey && !configSyncItemKeys.has(itemKey)) {
+        configSyncItemKeys.add(itemKey);
+        configSyncReceivedItems = configSyncItemKeys.size;
+      }
+      touchConfigSyncProgress();
       return;
     }
     if (bytes[0] === 0xa5 && bytes[1] === DSP_EVENT_CONFIG_END && bytes.length === 7) {
@@ -1120,8 +1369,9 @@ function handleBleRxNotification(event) {
       const revision = view.getUint32(3, true);
       const complete = status === 0
         && configSyncExpectedItems > 0
-        && configSyncReceivedItems === configSyncExpectedItems
+        && configSyncItemKeys.size === configSyncExpectedItems
         && revision === configSyncRevision;
+      touchConfigSyncProgress();
       if (complete) renderMcuConfigOnInterface();
       setTxStatus(complete ? 'đồng bộ MCU' : 'đồng bộ chưa đầy đủ', complete ? 'ok' : 'bad');
       finishDspConfigSync(complete, complete
@@ -1153,6 +1403,15 @@ function detachBleTxCharacteristic() {
   bleTxCharacteristic = null;
 }
 
+async function getBlePrimaryService(uuid) {
+  const key = String(uuid).toLowerCase();
+  if (bleServiceCache.has(key)) return bleServiceCache.get(key);
+  if (!bleServer) throw new Error('BLE server unavailable');
+  const service = await bleServer.getPrimaryService(uuid);
+  bleServiceCache.set(key, service);
+  return service;
+}
+
 async function bindBleRxNotifications() {
   if (!bleServer) return false;
   detachBleRxNotifications();
@@ -1168,7 +1427,7 @@ async function bindBleRxNotifications() {
   for (const item of candidates) {
     let characteristic = null;
     try {
-      const service = await bleServer.getPrimaryService(item.service);
+      const service = await getBlePrimaryService(item.service);
       characteristic = await service.getCharacteristic(item.characteristic);
       appendRxLog(`RX characteristic found (${item.characteristic.slice(0, 8)}...), enabling notify`);
       characteristic.addEventListener('characteristicvaluechanged', handleBleRxNotification);
@@ -1195,6 +1454,7 @@ async function bindBleRxNotifications() {
       const characteristics = await service.getCharacteristics();
       const serviceUuid = String(service.uuid || '').toLowerCase();
       if (!(serviceUuid.includes('ff00') || serviceUuid.includes('ab00'))) continue;
+      bleServiceCache.set(serviceUuid, service);
       const characteristic = characteristics.find((candidate) => {
         const uuid = String(candidate.uuid || '').toLowerCase();
         return (uuid.includes('ff02') || uuid.includes('ab02'))
@@ -1224,7 +1484,7 @@ async function bindBleTxCharacteristic() {
   ];
   for (const item of candidates) {
     try {
-      const service = await bleServer.getPrimaryService(item.service);
+      const service = await getBlePrimaryService(item.service);
       bleTxCharacteristic = await service.getCharacteristic(item.characteristic);
       traceBlePhase('TX_WRITE_READY', `uuid=${item.characteristic.slice(0, 8)}`);
       appendRxLog(`TX write ready (${item.characteristic.slice(0, 8)}...)`);
@@ -1241,6 +1501,7 @@ async function bindBleTxCharacteristic() {
       const characteristics = await service.getCharacteristics();
       const serviceUuid = String(service.uuid || '').toLowerCase();
       if (!(serviceUuid.includes('ff00') || serviceUuid.includes('ab00'))) continue;
+      bleServiceCache.set(serviceUuid, service);
       const characteristic = characteristics.find((candidate) => {
         const uuid = String(candidate.uuid || '').toLowerCase();
         return (uuid.includes('ff01') || uuid.includes('ab01'))
@@ -1510,21 +1771,37 @@ function prepareDspConfigSync(message = '') {
   configSyncExpectedItems = 0;
   configSyncReceivedItems = 0;
   configSyncRevision = 0;
+  configSyncItemKeys = new Set();
   if (message) appendRxLog(message);
+  document.body.classList.add('ble-config-syncing');
 
   const completion = new Promise((resolve) => {
     configSyncResolve = resolve;
-    configSyncTimer = setTimeout(() => {
-      finishDspConfigSync(false, 'Quá thời gian chờ dữ liệu từ thiết bị');
-    }, 7000);
+    armConfigSyncInactivityTimer();
+    configSyncOverallTimer = setTimeout(() => {
+      finishDspConfigSync(false, 'Thiết bị mất quá nhiều thời gian để gửi dữ liệu');
+    }, CONFIG_SYNC_OVERALL_MS);
   });
   return completion;
 }
 
 async function requestDspConfigFromChip() {
-  const completion = prepareDspConfigSync('Đang tải thông số thiết bị...');
-  await sendTx('config-get');
-  return completion;
+  for (let attempt = 1; attempt <= CONFIG_SYNC_MAX_ATTEMPTS; attempt += 1) {
+    const completion = prepareDspConfigSync(attempt === 1
+      ? 'Đang tải thông số thiết bị...'
+      : 'Đang thử tải lại thông số thiết bị...');
+    const sent = await sendTx('config-get');
+    if (!sent) {
+      finishDspConfigSync(false, 'Chưa gửi được yêu cầu đọc thông số');
+    }
+    const synced = await completion;
+    if (synced) return true;
+    if (!connected || !bleDevice?.gatt?.connected) return false;
+    if (attempt < CONFIG_SYNC_MAX_ATTEMPTS) {
+      await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+    }
+  }
+  return false;
 }
 
 async function syncAfterResetDefaults() {
@@ -1584,18 +1861,18 @@ function appendBlePacketCrc(packet) {
 async function performTx(tag) {
   if (!connected) {
     setTxStatus('blocked (not connected)', 'bad');
-    return;
+    return false;
   }
   if (!bleTxCharacteristic) {
     setTxStatus('blocked (TX not ready)', 'bad');
-    return;
+    return false;
   }
   const basePacket = buildBlePacket(tag);
   if (!basePacket) {
     const message = lastPacketError || 'unsupported control';
     setTxStatus(message, 'warn');
     if (lastPacketError) appendRxLog(`TX blocked: ${lastPacketError}`);
-    return;
+    return false;
   }
   const packet = appendBlePacketCrc(basePacket);
   const signature = packetSignature(packet);
@@ -1607,7 +1884,7 @@ async function performTx(tag) {
     || packet[1] === DSP_CMD_SET_STARTUP_LEVELS;
   if (!repeatableCommand && lastTxSignature === signature) {
     setTxStatus('SKIPDUP', 'warn');
-    return;
+    return true;
   }
   try {
     if (typeof bleTxCharacteristic.writeValueWithResponse === 'function') {
@@ -1618,16 +1895,86 @@ async function performTx(tag) {
     lastTxSignature = signature;
     setTxStatus('TX OK', 'ok');
     if (!tag.startsWith('startup-levels_')) appendRxLog(`TX ${tag}`);
+    return true;
   } catch (error) {
     setTxStatus('TX failed', 'bad');
     appendRxLog(`TX failed: ${error?.name || 'Error'}: ${error?.message || 'unknown error'}`);
+    return false;
   }
 }
 
-function sendTx(tag) {
-  const job = txQueue.then(() => performTx(tag), () => performTx(tag));
-  txQueue = job.catch(() => {});
-  return job;
+function clearTxPipeline() {
+  txScheduleTimers.forEach((timer) => clearTimeout(timer));
+  txScheduleTimers.clear();
+  while (txQueue.length) {
+    const job = txQueue.shift();
+    job.resolve(false);
+  }
+}
+
+async function runTxWorker() {
+  if (txWorkerRunning) return;
+  txWorkerRunning = true;
+  try {
+    while (txQueue.length) {
+      const job = txQueue.shift();
+      const ok = await performTx(job.tag);
+      job.resolve(ok);
+    }
+  } finally {
+    txWorkerRunning = false;
+    if (txQueue.length) runTxWorker();
+  }
+}
+
+function sendTx(tag, options = {}) {
+  const coalesceKey = options.coalesceKey || '';
+  if (coalesceKey) {
+    const pending = txQueue.find((job) => job.coalesceKey === coalesceKey);
+    if (pending) {
+      pending.tag = tag;
+      return pending.promise;
+    }
+  }
+
+  let resolveJob;
+  const promise = new Promise((resolve) => {
+    resolveJob = resolve;
+  });
+  txQueue.push({ tag, coalesceKey, resolve: resolveJob, promise });
+  runTxWorker();
+  return promise;
+}
+
+function scheduleControlTx(tag, coalesceKey, delayMs) {
+  const previous = txScheduleTimers.get(coalesceKey);
+  if (previous) clearTimeout(previous);
+  const timer = setTimeout(() => {
+    txScheduleTimers.delete(coalesceKey);
+    sendTx(tag, { coalesceKey });
+  }, delayMs);
+  txScheduleTimers.set(coalesceKey, timer);
+}
+
+function flushControlTx(tag, coalesceKey) {
+  const timer = txScheduleTimers.get(coalesceKey);
+  if (timer) clearTimeout(timer);
+  txScheduleTimers.delete(coalesceKey);
+  return sendTx(tag, { coalesceKey });
+}
+
+function getControlTxProfile(control) {
+  const id = control?.id || '';
+  if (['l-gain', 'r-gain', 'sub-gain', 'mic-output-gain'].includes(id)) {
+    return { key: `volume:${id}`, delay: 55 };
+  }
+  if (id.startsWith('echo-') || id.startsWith('rv-')) {
+    return { key: `effect:${id}`, delay: 80 };
+  }
+  if (id.startsWith('dyn-')) return { key: 'dynamic-eq', delay: 110 };
+  if (id.startsWith('drc-')) return { key: 'drc', delay: 110 };
+  if (id.startsWith('mic-afb-')) return { key: 'anti-feedback', delay: 90 };
+  return { key: `control:${id}`, delay: 80 };
 }
 
 function hidePwaBar() {
@@ -2459,13 +2806,21 @@ const onEqDragMove = (event) => {
   }
   renderEqLine(draggingSide);
   updatePreampRowFields(draggingSide, draggingBandId);
+  scheduleControlTx(
+    `drag_${getSideTxPrefix(draggingSide)}F${draggingBandId}_live`,
+    `eq-drag:${draggingSide}:${draggingBandId}`,
+    120
+  );
   setTxStatus('DRAG EQ', 'ok');
   event.preventDefault();
 };
 
 const stopEqDrag = () => {
   if (!isDragging || draggingBandId === null || !draggingSide) return;
-  sendTx(`drag_${getSideTxPrefix(draggingSide)}F${draggingBandId}_ok`);
+  flushControlTx(
+    `drag_${getSideTxPrefix(draggingSide)}F${draggingBandId}_ok`,
+    `eq-drag:${draggingSide}:${draggingBandId}`
+  );
   const side = draggingSide;
   draggingBandId = null;
   draggingSide = null;
@@ -2544,9 +2899,17 @@ if (bleNameInput) {
 document.querySelectorAll('.eq-band').forEach((el) => {
   el.addEventListener('input', () => {
     renderEqLine(el.dataset.eqTarget);
+    scheduleControlTx(
+      `eq_${el.dataset.eqTarget}_${el.value}`,
+      `graphic-eq:${el.dataset.eqTarget}`,
+      100
+    );
   });
   el.addEventListener('change', () => {
-    sendTx(`eq_${el.dataset.eqTarget}_${el.value}`);
+    flushControlTx(
+      `eq_${el.dataset.eqTarget}_${el.value}`,
+      `graphic-eq:${el.dataset.eqTarget}`
+    );
   });
 });
 
@@ -2562,9 +2925,22 @@ dynamicEqThresholdControls.forEach((control) => {
 });
 
 document.querySelectorAll('input[type="range"]:not(.eq-band), select').forEach((el) => {
+  if (el.matches('input[type="range"]')) {
+    el.addEventListener('input', () => {
+      if (el.disabled || (ADC_VOLUME_MODE && ADC_OWNED_CONTROL_IDS.includes(el.id))) return;
+      const profile = getControlTxProfile(el);
+      scheduleControlTx(`${el.id}:${el.value}`, profile.key, profile.delay);
+    });
+  }
   el.addEventListener('change', () => {
+    if (el.disabled || (ADC_VOLUME_MODE && ADC_OWNED_CONTROL_IDS.includes(el.id))) return;
     const key = `${el.id || el.tagName}:${el.value}`;
-    sendTx(key);
+    if (el.matches('input[type="range"]')) {
+      const profile = getControlTxProfile(el);
+      flushControlTx(key, profile.key);
+    } else {
+      sendTx(key);
+    }
   });
 });
 
@@ -2639,7 +3015,6 @@ function bindDrcEvents(params) {
     });
     el.addEventListener('change', () => {
       updateDrcCurve();
-      sendTx('drc-sync');
     });
   });
 }

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'dsp-interface-pot-v46-reset-eq-chart-20260915';
+const CACHE_NAME = 'dsp-interface-pot-v47-ble-flow-20261003';
 const ASSETS = [
   './',
   './index.html',
