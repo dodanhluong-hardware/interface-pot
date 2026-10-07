@@ -62,7 +62,7 @@ const DSP_EVENT_CONFIG_END = 0x84;
 const DSP_EVENT_POWER_STATUS = 0x85;
 const DSP_EVENT_READY = 0x86;
 const DSP_EVENT_AUDIO_METER = 0x87;
-const BLE_READY_TIMEOUT_MS = 1800;
+const BLE_READY_TIMEOUT_MS = 900;
 const BLE_SETUP_RETRY_DELAYS_MS = [150, 350, 800];
 const CONFIG_SYNC_INACTIVITY_MS = 3000;
 const CONFIG_SYNC_OVERALL_MS = 18000;
@@ -540,7 +540,9 @@ async function establishBleConnection(device, reason) {
       traceBlePhase('SERVICE_DISCOVERY_START', `attempt=${attempt + 1}`);
       await bindBleProductChannel();
       const firmwareReady = await waitForFirmwareReady();
-      if (!firmwareReady) throw new Error('Thiết bị chưa xác nhận kênh dữ liệu');
+      if (!firmwareReady) {
+        traceBlePhase('MCU_READY_TIMEOUT', 'continuing_with_config_probe=1');
+      }
       setupReady = true;
       break;
     } catch (error) {
@@ -561,7 +563,8 @@ async function establishBleConnection(device, reason) {
   if (!setupReady) {
     throw setupError || new Error('Không khởi tạo được kênh điều khiển');
   }
-  traceBlePhase('CHARACTERISTICS_READY', 'rx=1 tx=1 ready=1');
+  traceBlePhase('CHARACTERISTICS_READY',
+    `rx=1 tx=1 ready=${firmwareReadySeen ? 1 : 0}`);
   traceBlePhase('CONFIG_SYNC_START');
   const configSyncOk = await requestDspConfigFromChip();
   if (connectionGeneration !== bleConnectionGeneration || !device.gatt.connected) {
@@ -927,6 +930,8 @@ function handleAudioMeter(value, bytes) {
   const flags = bytes[3];
   const auxValid = Boolean(flags & (1 << 0));
   const micValid = Boolean(flags & (1 << 1));
+  const vocalLimiterActive = Boolean(flags & (1 << 2));
+  const vocalFxNearLimit = Boolean(flags & (1 << 3));
   const rms = [
     view.getUint16(4, true),
     view.getUint16(6, true),
@@ -951,9 +956,20 @@ function handleAudioMeter(value, bytes) {
   const names = ['AUX trái', 'AUX phải', 'Mic 1', 'Mic 2'];
   const overloaded = names.filter((_, index) =>
     peaks[index] >= 32000 && (index < 2 ? auxValid : micValid));
-  const overloadKey = overloaded.join('|');
+  const micInputOverloaded = micValid && (peaks[2] >= 32000 || peaks[3] >= 32000);
+  const warnings = [];
+  if (overloaded.length) {
+    warnings.push(`${overloaded.join(' và ')} đang nhận tín hiệu quá lớn; hãy giảm mức phát để tránh rè.`);
+  }
+  if (vocalLimiterActive && !micInputOverloaded) {
+    warnings.push('Mức khuếch đại micro đang quá cao; hãy giảm Mic 1 hoặc Mic 2 một chút.');
+  }
+  if (vocalFxNearLimit) {
+    warnings.push('Hiệu ứng micro đang đặt quá mạnh; hãy giảm Echo hoặc Reverb để tiếng sạch hơn.');
+  }
+  const overloadKey = warnings.join('|');
   if (overloadKey && overloadKey !== lastAudioMeterOverload) {
-    appendRxLog(`${overloaded.join(' và ')} đang nhận tín hiệu quá lớn; hãy giảm mức phát để tránh rè.`);
+    warnings.forEach((warning) => appendRxLog(warning));
   }
   lastAudioMeterOverload = overloadKey;
   return true;

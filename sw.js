@@ -1,4 +1,4 @@
-const CACHE_NAME = 'dsp-interface-pot-v48-robust-sync-rms-20261003';
+const CACHE_NAME = 'dsp-interface-pot-v50-robust-ready-20261007';
 const ASSETS = [
   './',
   './index.html',
